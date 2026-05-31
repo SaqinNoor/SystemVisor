@@ -1,173 +1,161 @@
-# System Architecture Update & Feature Specification: Integrated Media Dashboard, Audio Visualizer, and Layout Optimization
+# Architecture Optimization & Feature Extension Blueprint: Layout Fluidity, State Tracking, GPU Telemetry, and Dynamic Themes
 
-## 1. Feature Objective & Scope
-This specification details a comprehensive upgrade package for the `win11_sys_mon` terminal dashboard. The application will be expanded from a pure hardware resource monitor into a high-performance system-and-media suite.
+## 1. Executive Summary & Project scope
+This design document establishes the engineering specifications for refactoring the `SystemVisor` application across two execution phases. 
 
-### Core Architecture Goals
-* **Windows Loopback Audio Capture & DSP:** Tap natively into the active Windows 11 output audio device, performing real-time Fast Fourier Transform (FFT) analysis to drive a fluid audio visualizer.
-* **Auto-Adjusting Visualizer Gain:** Implement a dynamic automatic gain control (AGC) pipeline that normalizes audio visualization inputs on the fly, preventing the frequency bars from maxing out during loud tracks or disappearing during quiet ones.
-* **Global Media Session, Album Art, & Online Metadata:** Interface with the Windows Runtime (WinRT) to track system-wide media states, dynamically parsing song metadata and extracting raw thumbnail streams. Integrate an online metadata resolution pipeline to fetch missing data fields (such as Release Year) that the native OS payload does not provide.
-* **Layout Scaling & Aesthetic Refinement:** Re-engineer the layout calculations to ensure that multi-threaded, high-core-count Windows CPUs scale gracefully within their UI blocks, while stripping out unprofessional visual decorations in favor of an elite, minimalist developer aesthetic.
+* **Phase 1 (Stability & Telemetry):** Resolves interface scaling issues, visualizer out-of-bounds rendering bugs, and asynchronous state-caching issues, while introducing native Windows GPU hardware monitoring.
+* **Phase 2 (Customization & Viewport Management):** Implements an on-the-fly thematic engine, viewport switching capabilities to restore comprehensive process tables, and runtime UI orientation flipping.
 
 ---
 
-## 2. Combined Dependency Tree (`Cargo.toml`)
+## 2. Updated Dependency Matrix (`Cargo.toml`)
 
-Add these specialized dependencies to the existing hardware-monitoring project stack. Ensure optimization features are explicitly enabled for processing intensive graphics operations:
+To incorporate GPU monitoring and network-safe thematic synchronization, append or verify the following configuration blocks:
 
 ```toml
 [dependencies]
-# TUI and Terminal Abstraction
-ratatui = { version = "0.26", features = ["crossterm"] }
-crossterm = { version = "0.27", features = ["event"] }
-sysinfo = "0.30"
-crossbeam-channel = "0.5"
+# Existing dependencies (ratatui, crossterm, sysinfo, cpal, rustfft, image, reqwest, serde, windows)
 
-# Audio Stream Capture (WASAPI loopback binding)
-cpal = "0.15"
-
-# Fast Fourier Transform engine for DSP pipelines
-rustfft = "6.1"
-
-# Dynamic image decoding and resizing utilities (optimized feature subset)
-image = { version = "0.24", default-features = false, features = ["png", "jpeg"] }
-
-# Asynchronous HTTP client for metadata resolution APIs
-reqwest = { version = "0.11", features = ["json"] }
-serde = { version = "1.0", features = ["derive"] }
-
-# Windows Native Runtime APIs for Global Media Session tracking
-windows = { version = "0.52", features = [
-    "Media_Control",
-    "Foundation",
-    "Storage_Streams"
-] }
+# Time tracking utilities for text animation intervals
+tokio = { version = "1.0", features = ["rt-multi-thread", "time"] }
 ```
 
 ---
 
-## 3. Concurrency & Multi-Threaded Pipeline Architecture
+## 3. Phase 1 Engineering Specifications (Fixes & Core Telemetry)
 
-To maintain a locked UI framerate of 60 FPS without UI micro-stutters or audio degradation, the system delegates blocking execution trees across four dedicated background threads.
+### A. Dynamic Visualizer Responsive Scaling (Fix 1)
+* **The Bug:** The audio visualizer is hardcoded to output a fixed number of frequency bins. On smaller window sizes, bars past column 13 clip cleanly out of bounds, generating visual clutter.
+* **The Solution:** Decouple the FFT bin aggregation loop from static bounds. In the rendering path, query the bounding box width allocated by Ratatui (`rect.width`). 
+* **Mathematical Downsampling Solver:** If the container width accommodates $W$ characters, calculate the maximum allowable bars: 
+  $$\text{Max Bars} = \frac{W}{\text{Bar Width} + \text{Spacing}}$$
+  Dynamically re-pool the raw FFT output slice into exactly $\text{Max Bars}$ groupings before running the exponential decay filter, forcing the spectrum data to scale elegantly from small terminal windows to full-screen panes.
 
-```
-+-----------------------------------------------------------------+
-|                       AUDIO CAPTURE WORKER                      |
-|  1. Capture raw PCM via cpal WASAPI default loopback stream      |
-|  2. Windowing (Hann) & Real-time FFT processing (rustfft)        |
-|  3. Run Dynamic AGC Auto-Gain Filter to auto-normalize bounds   |
-|  4. Pipe normalized frequency arrays down to UI channel          |
-+-----------------------------------------------------------------+
-                                | AppEvent::AudioSpectrum(Vec<f32>)
-                                v
-+-----------------------------------------------------------------+
-|                     GSMTC WINDOWS MEDIA WORKER                  |
-|  1. Await Global Media Transport Session updates                |
-|  2. Emit textual track metadata (Title, Artist, Album)          |
-|  3. Spawn Async HTTP Task to query missing Release Year API     |
-|  4. Fetch raw .Thumbnail IRandomAccessStream byte array         |
-+-----------------------------------------------------------------+
-                                | Payload Stream bytes
-                                v
-+-----------------------------------------------------------------+
-|                    IMAGE PROCESSING WORKER                      |
-|  1. Intercept stream bytes and load via image::load_from_memory |
-|  2. Apply a ~2.0 vertical aspect ratio compensation stretch    |
-|  3. Resize down to match visualizer panel grid layout dimensions |
-+-----------------------------------------------------------------+
-                                | AppEvent::NewAlbumArt(Matrix)
-                                v
-+-----------------------------------------------------------------+
-|                       MAIN UI THREAD (Ratatui)                  |
-|  - Process events, execute decay filters, draw unified widgets.  |
-+-----------------------------------------------------------------+
-```
+### B. Media Playback State Persistence (Fix 2)
+* **The Bug:** Pausing audio triggers a metadata flush routine, resetting the asynchronously fetched track date to a perpetual "Fetching..." state that remains un-invalidated upon playback resumption.
+* **The Solution:** Separate **Track Identity Properties** (Title, Artist, Album) from **Track Playback States** (Play, Pause, Stop) within the WinRT GSMTC listener. 
+* **State Guard Logic:**
+  ```rust
+  // Inside the Media Update Event Handler
+  if current_session.playback_status() == Paused {
+      // Keep structural Track Data intact; modify ONLY the execution state
+      app_state.media_metadata.is_playing = false; 
+  }
+  ```
+  Only wipe the cached network metadata vector (`MediaMetadata.year`) if a definitive track identifier hash changes (e.g., `Title` or `TrackId` mutation), preventing redundant API requests and preserving stale metadata blocks while paused.
 
-### Event Bus Specifications (`AppEvent` Enum)
+### C. GPU Telemetry Integration (Feature 3)
+* **The Strategy:** Introduce real-time graphics hardware monitoring. Because the Windows `sysinfo` crate lacks full native GPU telemetry extraction profiles, harness the Windows Runtime APIs or WMI performance counters to populate a unified hardware data object.
+* **Metrics to Sample:** 1. Global 3D Core Utilization Percentage
+  2. VRAM Allocation (Allocated vs Total Memory Pool)
+  3. Core Thermal Temperatures (where vendor-exposed)
+* **UI Integration:** Place the GPU module in the primary system column directly beneath the RAM block, leveraging identical full-width structural gauges.
+
+### D. Layout Fluidity Engine & Text Marquee Scroller (Feature 4)
+To match the aesthetic of classic high-performance terminal layout tools, elements must never clip or trigger raw design breaks.
+1. **Dynamic Clamping:** Enforce minimum character layout cut-offs. If a layout row width is too narrow to print a metric title alongside its data string, drop the title prefix entirely and render a compact raw digit gauge (`[▓▓░░] 45%`).
+2. **Text Marquee Engine:** For variable string data (Track Titles, Artists, Long Process Names) that exceed the layout cell width, build an automated textual carousel.
+
 ```rust
-pub enum AppEvent {
-    Tick,
-    Key(crossterm::event::KeyEvent),
-    Resize(u16, u16),
-    AudioSpectrum(Vec<f32>),
-    MediaUpdate(Option<MediaMetadata>),
-    NewAlbumArt(Vec<Vec<(u8, u8, u8)>>), // 2D matrix of RGB tuples for the UI blitter
+struct ScrollingText {
+    content: String,
+    tick_offset: usize,
+    last_update: std::time::Instant,
 }
 
-pub struct MediaMetadata {
-    pub title: String,
-    pub artist: String,
-    pub album: String,
-    pub year: Option<String>, // Resolved asynchronously via network API
-    pub is_playing: bool,
+impl ScrollingText {
+    fn get_visible_slice(&mut self, max_width: usize) -> String {
+        let chars: Vec<char> = self.content.chars().collect();
+        if chars.len() <= max_width {
+            return self.content.clone();
+        }
+        // Append padding spacers for an infinite cyclic loop
+        let mut display_pool = chars.clone();
+        display_pool.extend(vec![' ', ' ', '─', ' ', ' ']);
+        display_pool.extend(chars.clone());
+        
+        let start = self.tick_offset % (chars.len() + 5);
+        let end = (start + max_width).min(display_pool.len());
+        display_pool[start..end].iter().collect()
+    }
 }
 ```
 
 ---
 
-## 4. Deep-Dive Engineering Blueprints
+## 4. Phase 2 Engineering Specifications (Customization & Viewports)
 
-### A. Windows Media Session & Online Year Resolution
-Instead of inspecting process windows or running polling scripts, the background worker ties directly into the WinRT **Global System Media Transport Controls Session Manager**.
-* **Hooking:** Request access via `GlobalSystemMediaTransportControlsSessionManager::RequestAsync()`.
-* **Events:** Subscribe to `CurrentSessionChanged` and bind listeners to the active session’s `MediaPropertiesChanged` and `PlaybackInfoChanged` properties.
-* **Online Year Fetch Pipeline:** The Windows native GSMTC payload returns song title, artist, and album, but it does *not* provide release year tracking. When a metadata change event fires, the media worker must catch the text strings and spawn an asynchronous non-blocking HTTP request via `reqwest` to a public database API (such as the MusicBrainz API or MusicMatch API). Once the payload returns the structural track profile, parse out the release date string and send an updated `MediaMetadata` payload to the UI channel.
-* **Thumbnail Extraction:** Execute `.GetThumbnailAsync()`, open an asynchronous read stream via `IRandomAccessStreamWithContentType`, and copy the raw buffer directly over to a thread-safe memory vector (`Vec<u8>`) to send to the image pipeline.
+### A. Dynamic Thematic Subsystem
+Implement an active color-palette mapping structure switchable on runtime ticks using a designated keyboard interface target (Hotkey: `t`).
+* **Aesthetic Rule:** Themes must only adjust color hexadecimal attributes (`Color::Rgb`). Layout structures, minimalist line weights, and box configurations remain rigidly uniform.
+* **Palette Profiles Matrix:**
+  * **Nord:** Deep frost slate, cool blues, soft white.
+  * **Gruvbox Dark:** Earthy retro tones, mustard yellow, dark charcoal, brick red.
+  * **Catppuccin Macchiato:** Modern pastel violet, soft lavender, dark marine gray.
+  * **Dracula:** High-contrast purple, deep violet backdrops, neon green highlights.
+  * **Tokyo Night:** Deep cyber blues, dark indigo, neon teal accents.
+  * **Monochrome Raw:** Strict matrix configurations using grayscale tiers (`Rgb(255,255,255)`, `Rgb(128,128,128)`, `Rgb(30,30,30)`).
 
-### B. High-Fidelity Album Art Rendering via "Half-Blocks"
-To output clear, colored album artwork inside a character-based console, the application implements a text-mode frame buffer shortcut utilizing the Unicode half-block symbol (`▄`). 
+### B. Viewport Workspace Toggle
+Introduce an active layout view state tracking system (`ActiveMediaView`) controlled by a dedicated utility key (Hotkey: `v` or `Tab`).
+* **View A (Media Active):** The right half of the main interface processes and paints the album artwork engine, the track context blocks, and the real-time audio visualizer spectrum graph.
+* **View B (Process Active):** The right half of the layout entirely unmounts the media audio engine canvas, dynamically sliding in a multi-column **Process System Table** displaying active system PIDs, names, CPU thread values, and precise execution memory footprints, sorted by active resource footprint load.
 
-Because a single terminal cell is roughly twice as tall as it is wide, splitting it vertically allows a single character space to render two independent square color blocks:
-1. **The Worker Step:** The background processing thread downsamples the image using `image::imageops::FilterType::Lanczos3`. It applies a scale adjustment factor (stretching the height or squeezing the width) to neutralize terminal font distortion.
-2. **The Render Loop Step:** When iterating through the downsampled RGB matrix, every loop step samples two vertical pixels at a time:
-   * Set the terminal cell's **Foreground Color** to match the upper pixel's RGB value.
-   * Set the terminal cell's **Background Color** to match the lower pixel's RGB value.
-   * Draw the character `▄`.
-
-### C. Audio Pipeline, FFT, & Auto-Adjusting Frequency Gain
-* **Host Setup:** Configure `cpal` to use the Windows WASAPI loopback device: `cpal::platform::DeviceExtWindows::default_loopback_input_device()`.
-* **DSP Processing:** Collect incoming PCM data streams into discrete sample window frames ($N = 1024$ or $2048$). Smooth out edge-discontinuity artifacts by filtering buffers through a Hann window function before passing the samples into `rustfft`.
-* **Auto-Adjusting Visualizer Gain Engine:** To fix the issue found in basic visualizers where loud music clips/maxes out all rendering bars and quiet music leaves the bars flat, the engine must implement dynamic scaling. Track a rolling peak threshold ($P_{\text{peak}}$) of the highest frequency bin over a moving time window (e.g., the last 2-3 seconds). Normalize the current frame's values relative to this dynamic peak range instead of hardcoded maximum constants:
-  $$\text{Normalized Amplitude} = \frac{\text{Current Amplitude}}{P_{\text{peak}}}$$
-  To prevent erratic bouncing, apply a slow relaxation envelope to $P_{\text{peak}}$ when the volume drops. This ensures that the visualizer auto-calibrates instantly to soft acoustic tracks, heavy electronic bass lines, or maxed system volumes without clipping.
-* **Smoothing Filter:** Apply a persistent exponential smoothing decay calculation on the UI main thread during every redraw step to avoid visual jitter:
-  $$V_{\text{current}} = \max(V_{\text{target}}, V_{\text{previous}} \times 0.85)$$
-
-### D. Layout Redesign & Aesthetic Rules
-
-#### 1. CPU Core Layout Scaling Fix
-* **The Bug:** Hardcoded grid positioning for per-core performance metrics breaks when running on modern processors containing high logical thread counts (16, 24, 32, or 64 threads), resulting in broken containers and unreadable data blocks.
-* **The Refactoring Requirements:** The per-core monitoring system must remain an integral part of the dashboard, but it must dynamically scale its layout contents. 
-* **Dynamic Grid Solver:** Query the engine for the logical core count via `sysinfo::System::cpus().len()`. Calculate the available character area inside the layout block, and programmatically compute an optimized multi-column/multi-row matrix grid wrapper. Dynamically adjust individual core label sizes and bar chart widths based on available screen space, switching to a high-density, ultra-compact text visualization format if screen space falls below established min-width thresholds.
-
-#### 2. Aesthetic Uniformity & Iconography Guidelines
-To ensure the terminal interface presents as an elite, production-grade diagnostic application rather than an AI-generated prototype, developers must enforce strict design guidelines:
-* **Zero Emojis Allowed:** Standard emojis (e.g., 🎵, 📊, 💻, 🧠) are completely banned from all blocks, labels, headers, and UI widgets.
-* **Minimalist UI Indicators:** Use clean, standard geometric Unicode structures (`■`, `▲`, `▼`, `░`, `▒`, `▓`), custom block fills, and standard line drawing box components (`│`, `─`, `┌`, `┐`). This maintains visual uniformity across dark terminal themes and respects system console font settings.
+### C. Structural Layout Inversion (Flip Control)
+To support fully custom user configurations, provide a layout layout modifier flag (`LayoutOrientation`) activated at runtime (Hotkey: `f`).
+* **Standard State:** System resource hardware blocks map to the left pane; Media controls/Process views map to the right pane.
+* **Inverted State:** The application swaps coordinate targets instantly, shifting the complex graphics blocks to the left and anchoring hardware health rows to the right.
 
 ---
 
-## 5. Visual Dashboard Structure Blueprint
+## 5. Visual Layout Configurations (Phase 2 Architectures)
 
+### Standard Orientation Layout Matrix (`ActiveMediaView == true`)
 ```
 ┌───────────────────────────────────────┐┌──────────────────────────────────────┐
-│  SYSTEM MONITOR  ■ CPU: 24% [▓▒░░░░]  ││  MEDIA CONTROL DASHBOARD             │
-├───────────────────────────────────────┤│                                      │
-│ CORES PROFILE (Auto-Scaling Grid)     ││  ┌──────────────┐  Now Playing        │
-│ C01: [████] C02: [██]   C03: [██████] ││  │  ALBUM ART   │  Track:  Isolated  │
-│ C04: [█]    C05: [████] C06: [██████] ││  │  (UNCODED    │  Artist: Mind Spool│
-│ C07: [███]  C08: [█]    C09: [███]    ││  │  HALF-BLOCKS)│  Album:  The Grid  │
-│ C10: [████] C11: [██]   C12: [█]      ││  │  FULL COLOR  │  Year:   2026 [API]│
-├───────────────────────────────────────┤│  └──────────────┘  Status: Playing   │
-│ MEMORY PROFILE                        ││                                      │
-│ RAM:  [████████████████░░░░░] 16.2 GB ││  REAL-TIME FREQUENCY SPECTRUM        │
-│ SWAP: [██░░░░░░░░░░░░░░░░░░░]  2.1 GB ││  █       █               █           │
-│                                       ││  █   █   █               █   █       │
-│ STORAGE & NET                         ││  █   █   █   █       █   █   █   █   │
-│ C:\ [██████░░]   Up:   1.2 MB/s       ││  █ █ █ █ █ █ █ █   █ █ █ █ █ █ █ █   │
-│ D:\ [████████]   Down: 8.4 MB/s       ││  └───┬───┴───┬───┴───┬───┴───┬───┴───┤
-└───────────────────────────────────────┘└──────┴───────┴───────┴───────┴───────┘
+│ SYSTEM MONITOR   ■ CPU [▓▒░░░░] 24%   ││ MEDIA MONITOR DASHBOARD              │
+├───────────────────────────────────────┤│ ┌──────────────┐ [Scrolling Title..] │
+│ CORES (Dynamic Grid Scaling)          ││ │  ALBUM ART   │ Artist: Artist Name │
+│ C1 [██] C2 [████] C3 [█]  C4 [███]    ││ │  HALF-BLOCK  │ Album:  Album Title │
+│ C5 [█]  C6 [███]  C7 [█]  C8 [█████]  ││ │  FULL-COLOR  │ Year:   2026        │
+├───────────────────────────────────────┤│ └──────────────┘ Status: Playing     │
+│ MEMORY   ■ RAM  [██████░░░] 16.2 GB   ││──────────────────────────────────────│
+│ GRAPHICS ■ GPU  [███░░░░░░]  8.1 GB   ││ REAL-TIME FREQUENCY VISUALIZER      │
+├───────────────────────────────────────┤│ (Auto-Scales to dynamic width)       │
+│ STORAGE & NET                         ││ █       █               █            │
+│ C:\ [████░░]   ▲ Up:   1.2 MB/s       ││ █ █ █ █ █ █ █ █   █ █ █ █ █ █ █ █    │
+└───────────────────────────────────────┘└──────────────────────────────────────┘
+```
+
+### Inverted Orientation Layout Matrix (`ActiveMediaView == false` / Toggled Process View)
+```
+┌───────────────────────────────────────┐┌──────────────────────────────────────┐
+│ SYSTEM PROCESS MANAGER                ││ SYSTEM MONITOR   ■ CPU [▓▒░░░░] 24%   │
+├───────────────────────────────────────┤├──────────────────────────────────────┤
+│  PID   NAME         CPU%   MEM        ││ CORES (Dynamic Grid Scaling)          │
+│  4012  rust_engine  12.4   184MB      ││ C1 [██] C2 [████] C3 [█]  C4 [███]    │
+│  1094  spotify.exe   4.1   412MB      ││ C5 [█]  C6 [███]  C7 [█]  C8 [█████]  │
+│  9214  chrome.bin    2.0   980MB      ├───────────────────────────────────────┤
+│  8821  win_init      0.1    12MB      ││ MEMORY   ■ RAM  [██████░░░] 16.2 GB   │
+│  3401  explorer      0.0    84MB      ││ GRAPHICS ■ GPU  [███░░░░░░]  8.1 GB   │
+│  7712  sys_mon_tui   0.0    14MB      ├───────────────────────────────────────┤
+│                                       ││ STORAGE & NET                         │
+│ [Hotkey Controls: t=Theme|v=View|f=Flip]││ C:\ [████░░]   ▲ Up:   1.2 MB/s       │
+└───────────────────────────────────────┘└──────────────────────────────────────┘
 ```
 
 ---
 
+## 6. Target Prompt for Code Generation
+
+Act as a principal systems engineer, audio developer, and specialized terminal user interface architect. Refactor our established Windows 11 Rust system monitor (`SystemVisor`) to integrate Phase 1 and Phase 2 optimization extensions based strictly on the specification guidelines detailed in the updated design_doc.md.
+
+Your implementation codebase must meet these programmatic criteria:
+1. Visualizer Width Calculation Fix: Prevent out-of-bounds column clipping. Query Ratatui's canvas area width inside the drawing path, programmatically calculate the max allowable bar structures, and downsample/re-group the FFT frequency vectors to dynamically fit the container.
+2. Media Caching State Resolution: Isolate GSMTC textual metadata properties from system playback state tokens. Ensure that dropping into a 'Paused' playback status updates state booleans without triggering a cache invalidation wipe of the current song title, artist data, or the asynchronously resolved release year.
+3. Native Windows GPU Engine: Implement a telemetry worker path using standard Windows runtime components or WMI commands to scrape real-time GPU compute core utilization and VRAM allocation levels. Integrate these metrics seamlessly as a full-width gauge tracking module positioned directly beneath the RAM panel.
+4. Layout Fluidity & Dynamic Marquee Module: Eradicate arbitrary text truncation. Build a custom scrolling component that wraps layout text over target bounding limits, incrementing string indices via application ticks to cycle overflow strings continuously. Ensure strict dynamic layout protection—if grid bounds drop below safe limits, drop labeling prefixes in favor of highly packed metric indicators.
+5. Dynamic Theming Engine: Create a theme manager object holding an array of 6-8 popular console developer configurations (such as Nord, Gruvbox, Catppuccin, Dracula, and Monochrome). Map all aesthetic widget strokes to a central palette color state, allowing users to loop color palettes instantly via the 't' keyboard hotkey.
+6. Workspace Switching & Orientation Flipping: Integrate toggleable application layout contexts. Pressing the 'v' key must instantly unmount the music components and blit a structured, real-time resource-sorted Processes Data Table into the viewport frame. Pressing the 'f' key must cleanly invert layout orientation properties, instantly shifting the hardware stack between the left and right quadrants of the terminal frame.
+
+Ensure your code preserves the zero-emoji minimalist typography standard, uses robust allocation models, is highly scannable, and functions in a completely non-blocking manner across all worker paths. The complete specifications is in the updated design_doc.md file. Focus on phase 1 first.

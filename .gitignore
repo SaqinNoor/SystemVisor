@@ -23,3 +23,5 @@ Cargo.lock
 *.tar.gz
 
 design_doc.md
+incremental.md
+lyric_doc.md
