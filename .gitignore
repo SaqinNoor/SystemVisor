@@ -21,3 +21,5 @@ Cargo.lock
 # Distribution
 *.zip
 *.tar.gz
+
+design_doc.md

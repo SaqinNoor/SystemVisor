@@ -62,10 +62,6 @@ cargo build --release --locked
 
 The resulting `.exe` is fully portable and requires no additional dependencies on Windows 11.
 
-## Development
-
-This project is actively developed. Check the [design_doc.md](design_doc.md) for planned features including audio visualization and media session integration.
-
 ### Project Structure
 
 ```
