@@ -147,16 +147,6 @@ pub fn spawn_telemetry_thread(tx: Sender<Box<SystemSnapshot>>, poll_interval: Du
                     memory: proc.memory(),
                 })
                 .collect();
-
-            // To avoid passing an excessively large list of processes, we can sort them here or pass all.
-            // Sorting is done on the UI thread for custom columns, but we can filter out sleeping/idle
-            // processes if memory footprint is high, or just keep them all for full UI interactivity.
-            // Let's pass all processes so the UI thread has full visibility, but cap it to top N during UI draw.
-            // Let's ensure memory optimization by keeping it sorted or pre-filtered if we want.
-            // Actually, sorting and limiting to top 150 here reduces crossbeam channel payload allocation size
-            // while still giving more than enough processes for a 20-row table. But wait! Let's pass all
-            // so the user can sort by PID, Name, CPU, or Memory dynamically in the UI. 100-300 processes
-            // is extremely small in Rust and will allocate negligible memory.
             
             let snapshot = SystemSnapshot {
                 os_name,
