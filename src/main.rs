@@ -708,7 +708,7 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
             let status_text = if meta.is_playing { "Playing" } else { "Paused" };
             let status_style = if meta.is_playing { Style::default().fg(Color::Rgb(52, 211, 153)).bold() } else { Style::default().fg(Color::Yellow).bold() };
 
-            let year_resolved = meta.year.as_deref().unwrap_or("Pending...");
+            let year_resolved = meta.year.as_deref().unwrap_or("Fetching...");
             
             vec![
                 Line::from(vec![Span::styled("Now Playing", Style::default().bold().fg(theme_violet))]),
