@@ -5,6 +5,10 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+  packages: write
+
 jobs:
   build-release:
     runs-on: windows-latest
@@ -19,24 +23,23 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked
       
+      - name: Get version from tag
+        id: version
+        run: |
+          $tag = "${{ github.ref }}".Replace("refs/tags/v", "")
+          echo "version=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      
       - name: Rename binary for distribution
         run: |
-          $version = "${{ github.ref }}".Replace("refs/tags/v", "")
           $exePath = "target/release/systemvisor.exe"
           $distExe = "systemvisor.exe"
           Copy-Item $exePath $distExe
       
       - name: Create portable ZIP
         run: |
-          $version = "${{ github.ref }}".Replace("refs/tags/v", "")
+          $version = "${{ steps.version.outputs.version }}"
           $zipName = "systemvisor-v$version-portable.zip"
           Compress-Archive -Path systemvisor.exe, README.md -DestinationPath $zipName
-      
-      - name: Get tag name
-        id: tag
-        run: |
-          $tag = "${{ github.ref }}".Replace("refs/tags/", "")
-          echo "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
       
       - name: Create Release
         uses: softprops/action-gh-release@v1
@@ -44,22 +47,46 @@ jobs:
           draft: false
           prerelease: false
           body: |
-            # SystemVisor ${{ steps.tag.outputs.tag }}
+            # SystemVisor v${{ steps.version.outputs.version }}
             
-            Automated release build for SystemVisor.
+            ## Welcome to SystemVisor
             
-            ## Downloads
+            SystemVisor is a lightweight, high-performance Windows 11 system monitor designed for your terminal. Get real-time insights into your system's CPU, memory, disk, and network performance directly from your command line.
             
-            - **systemvisor.exe** — Windows 11 executable (portable)
-            - **systemvisor-v${{ steps.tag.outputs.tag }}-portable.zip** — Complete portable package
+            ### Features
             
-            ## Installation
+            - **Real-time CPU monitoring** — Per-core and global CPU usage at a glance
+            - **Memory & swap tracking** — Comprehensive memory usage visualization
+            - **Disk and network stats** — Monitor I/O and network throughput in real-time
+            - **Process monitoring** — Track top processes by CPU and memory consumption
+            - **Responsive TUI** — Smooth, responsive terminal interface powered by Ratatui
+            - **Lightweight** — Minimal resource overhead while you work
             
-            Download `systemvisor.exe` or extract the portable ZIP and run the executable.
+            ### Installation
             
-            Requires Windows 11. No additional dependencies needed.
+            Download `systemvisor.exe` and run it directly on Windows 11. No dependencies required.
+            
+            Alternatively, extract the portable ZIP and run the executable inside.
+            
+            ### Quick Start
+            
+            ```bash
+            systemvisor.exe
+            ```
+            
+            ### Controls
+            
+            - **Arrow keys** — Navigate between sections and sort processes
+            - **Tab** — Switch focus between panels
+            - **q** — Quit the application
+            
+            ### About This Release
+            
+            This is the first release of SystemVisor. The project has been refactored to support automated release builds via GitHub Actions. Every time a version tag (v0.1.0, v0.1.1, etc.) is pushed, a new release is automatically built and published here.
+            
+            For more information, visit the [GitHub repository](https://github.com/SaqinNoor/systemvisor).
           files: |
             systemvisor.exe
-            systemvisor-v${{ steps.tag.outputs.tag }}-portable.zip
+            systemvisor-v${{ steps.version.outputs.version }}-portable.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
