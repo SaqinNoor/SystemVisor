@@ -15,12 +15,22 @@ Get real-time insights into your system's CPU, memory, disk, and network perform
 
 ## Quick Start
 
-### Prerequisites
+### Option 1: Download Pre-built Release (Easiest)
+
+Head over to the [Releases](https://github.com/SaqinNoor/systemvisor/releases) page and download the latest `systemvisor.exe` or the portable ZIP. No build tools needed — just download and run.
+
+```bash
+systemvisor.exe
+```
+
+### Option 2: Build from Source
+
+#### Prerequisites
 
 - Windows 11
-- Rust 1.70+ (to build from source)
+- Rust 1.70+ (from [rustup.rs](https://rustup.rs/))
 
-### Build
+#### Build
 
 ```bash
 cargo build --release
