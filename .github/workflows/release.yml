@@ -1,0 +1,65 @@
+name: Release Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Build release binary
+        run: cargo build --release --locked
+      
+      - name: Rename binary for distribution
+        run: |
+          $version = "${{ github.ref }}".Replace("refs/tags/v", "")
+          $exePath = "target/release/systemvisor.exe"
+          $distExe = "systemvisor.exe"
+          Copy-Item $exePath $distExe
+      
+      - name: Create portable ZIP
+        run: |
+          $version = "${{ github.ref }}".Replace("refs/tags/v", "")
+          $zipName = "systemvisor-v$version-portable.zip"
+          Compress-Archive -Path systemvisor.exe, README.md -DestinationPath $zipName
+      
+      - name: Get tag name
+        id: tag
+        run: |
+          $tag = "${{ github.ref }}".Replace("refs/tags/", "")
+          echo "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          draft: false
+          prerelease: false
+          body: |
+            # SystemVisor ${{ steps.tag.outputs.tag }}
+            
+            Automated release build for SystemVisor.
+            
+            ## Downloads
+            
+            - **systemvisor.exe** — Windows 11 executable (portable)
+            - **systemvisor-v${{ steps.tag.outputs.tag }}-portable.zip** — Complete portable package
+            
+            ## Installation
+            
+            Download `systemvisor.exe` or extract the portable ZIP and run the executable.
+            
+            Requires Windows 11. No additional dependencies needed.
+          files: |
+            systemvisor.exe
+            systemvisor-v${{ steps.tag.outputs.tag }}-portable.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,7 +1,11 @@
 [package]
-name = "win11_sys_mon"
+name = "systemvisor"
 version = "0.1.0"
 edition = "2024"
+
+[[bin]]
+name = "systemvisor"
+path = "src/main.rs"
 
 [dependencies]
 ratatui = { version = "0.26", features = ["crossterm"] }
