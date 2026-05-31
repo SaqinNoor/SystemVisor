@@ -12,79 +12,78 @@ permissions:
 jobs:
   build-release:
     runs-on: windows-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+        with:
+          # Fetch full history so auto-generated release notes can compare against the previous tag
+          fetch-depth: 0
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-      
+
       - name: Build release binary
         run: cargo build --release --locked
-      
+
       - name: Get version from tag
         id: version
         run: |
           $tag = "${{ github.ref }}".Replace("refs/tags/v", "")
           echo "version=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-      
+
       - name: Rename binary for distribution
         run: |
           $exePath = "target/release/systemvisor.exe"
           $distExe = "systemvisor.exe"
           Copy-Item $exePath $distExe
-      
+
       - name: Create portable ZIP
         run: |
           $version = "${{ steps.version.outputs.version }}"
           $zipName = "systemvisor-v$version-portable.zip"
           Compress-Archive -Path systemvisor.exe, README.md -DestinationPath $zipName
-      
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           draft: false
           prerelease: false
+          # GitHub auto-generates release notes from commits and PRs since the last tag.
+          # No manual release notes needed — push a tag and this fills itself in.
+          generate_release_notes: true
           body: |
-            # SystemVisor v${{ steps.version.outputs.version }}
-            
-            ## Welcome to SystemVisor
-            
-            SystemVisor is a lightweight, high-performance Windows 11 system monitor designed for your terminal. Get real-time insights into your system's CPU, memory, disk, and network performance directly from your command line.
-            
+            ## SystemVisor v${{ steps.version.outputs.version }}
+
+            A lightweight, high-performance Windows 11 system monitor for the terminal — real-time CPU, memory, disk, network, and a live DSP audio spectrum visualizer.
+
             ### Features
-            
-            - **Real-time CPU monitoring** — Per-core and global CPU usage at a glance
-            - **Memory & swap tracking** — Comprehensive memory usage visualization
-            - **Disk and network stats** — Monitor I/O and network throughput in real-time
-            - **Process monitoring** — Track top processes by CPU and memory consumption
-            - **Responsive TUI** — Smooth, responsive terminal interface powered by Ratatui
-            - **Lightweight** — Minimal resource overhead while you work
-            
+            - **Per-core CPU matrix** — Auto-layout grid scaling to your logical core count
+            - **Memory & swap tracking** — Visualized with sparklines and gauges
+            - **Disk & network I/O** — Live throughput and totals
+            - **Process table** — Sortable by CPU, memory, PID, or name
+            - **Media dashboard** — GSMTC session metadata, album art, playback status
+            - **Real-time FFT spectrum** — 16-band musically-calibrated audio visualizer via WASAPI loopback
+            - **Zero-emoji UI** — Clean professional terminal aesthetics with Unicode block elements
+
             ### Installation
-            
-            Download `systemvisor.exe` and run it directly on Windows 11. No dependencies required.
-            
-            Alternatively, extract the portable ZIP and run the executable inside.
-            
-            ### Quick Start
-            
-            ```bash
-            systemvisor.exe
+            Download `systemvisor.exe` and run directly on Windows 11. No runtime dependencies.
+
+            ```powershell
+            .\systemvisor.exe
             ```
-            
+
             ### Controls
-            
-            - **Arrow keys** — Navigate between sections and sort processes
-            - **Tab** — Switch focus between panels
-            - **q** — Quit the application
-            
-            ### About This Release
-            
-            This is the first release of SystemVisor. The project has been refactored to support automated release builds via GitHub Actions. Every time a version tag (v0.1.0, v0.1.1, etc.) is pushed, a new release is automatically built and published here.
-            
-            For more information, visit the [GitHub repository](https://github.com/SaqinNoor/systemvisor).
+            | Key | Action |
+            |-----|--------|
+            | `q` | Quit |
+            | `Tab` / `s` | Cycle sort column |
+            | `r` | Reverse sort order |
+            | `1`–`4` | Jump to sort column |
+            | `j` / `k` | Scroll process list |
+
+            ---
+            *What changed in this release is listed automatically below by GitHub.*
           files: |
             systemvisor.exe
             systemvisor-v${{ steps.version.outputs.version }}-portable.zip
