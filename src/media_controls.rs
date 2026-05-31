@@ -58,7 +58,7 @@ pub fn spawn_media_controls_thread(tx: Sender<MediaEvent>) -> Option<thread::Joi
 
         let mut last_track_identifier = String::new();
         let mut last_playback_state = false;
-        let mut last_year: Option<String> = None;
+        let last_year = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
         let mut last_art_hash = 0usize;
 
         loop {
@@ -114,7 +114,7 @@ pub fn spawn_media_controls_thread(tx: Sender<MediaEvent>) -> Option<thread::Joi
             if track_changed {
                 last_track_identifier = current_track_identifier.clone();
                 last_playback_state = is_playing;
-                last_year = None;
+                *last_year.lock().unwrap() = None;
                 
                 // Immediately emit local metadata update with year as None (Pending)
                 let initial_meta = Box::new(MediaMetadata {
@@ -131,9 +131,11 @@ pub fn spawn_media_controls_thread(tx: Sender<MediaEvent>) -> Option<thread::Joi
                 let title_query = title.clone();
                 let artist_query = artist.clone();
                 let album_query = album.clone();
+                let last_year_clone = std::sync::Arc::clone(&last_year);
                 
                 thread::spawn(move || {
                     if let Some(year) = resolve_release_year(&title_query, &artist_query) {
+                        *last_year_clone.lock().unwrap() = Some(year.clone());
                         let updated_meta = Box::new(MediaMetadata {
                             title: title_query,
                             artist: artist_query,
@@ -171,11 +173,12 @@ pub fn spawn_media_controls_thread(tx: Sender<MediaEvent>) -> Option<thread::Joi
             } else if is_playing != last_playback_state {
                 // If only playback state changed, emit updated metadata retaining existing year
                 last_playback_state = is_playing;
+                let year_val = last_year.lock().unwrap().clone();
                 let updated_meta = Box::new(MediaMetadata {
                     title: title.clone(),
                     artist: artist.clone(),
                     album: album.clone(),
-                    year: last_year.clone(),
+                    year: year_val,
                     is_playing,
                 });
                 let _ = tx.send(MediaEvent::Metadata(updated_meta));

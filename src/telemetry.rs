@@ -52,6 +52,11 @@ pub struct SystemSnapshot {
 
     // Processes
     pub processes: Vec<ProcessInfo>,
+
+    // GPU Metrics
+    pub gpu_usage: f32,
+    pub gpu_vram_used: u64,
+    pub gpu_vram_total: u64,
 }
 
 /// Spawns a background thread to gather Windows metrics using the `sysinfo` crate.
@@ -69,6 +74,7 @@ pub fn spawn_telemetry_thread(tx: Sender<Box<SystemSnapshot>>, poll_interval: Du
         sys.refresh_all();
 
         let mut last_refresh = Instant::now();
+        let gpu_vram_total = query_total_vram();
 
         loop {
             // Keep thread alive at specified polling interval
@@ -148,6 +154,8 @@ pub fn spawn_telemetry_thread(tx: Sender<Box<SystemSnapshot>>, poll_interval: Du
                 })
                 .collect();
             
+            let (gpu_usage, gpu_vram_used) = query_gpu_metrics();
+
             let snapshot = SystemSnapshot {
                 os_name,
                 os_version,
@@ -168,6 +176,9 @@ pub fn spawn_telemetry_thread(tx: Sender<Box<SystemSnapshot>>, poll_interval: Du
                 net_total_rx,
                 net_total_tx,
                 processes,
+                gpu_usage,
+                gpu_vram_used,
+                gpu_vram_total,
             };
 
             // Send system state snapshot to UI thread
@@ -177,4 +188,39 @@ pub fn spawn_telemetry_thread(tx: Sender<Box<SystemSnapshot>>, poll_interval: Du
             }
         }
     })
+}
+
+fn query_total_vram() -> u64 {
+    if let Ok(output) = std::process::Command::new("powershell")
+        .args(&[
+            "-NoProfile",
+            "-Command",
+            "(Get-CimInstance Win32_VideoController | Measure-Object -Property AdapterRAM -Sum).Sum"
+        ])
+        .output()
+    {
+        let s = String::from_utf8_lossy(&output.stdout);
+        s.trim().parse::<u64>().unwrap_or(0)
+    } else {
+        0
+    }
+}
+
+fn query_gpu_metrics() -> (f32, u64) {
+    if let Ok(output) = std::process::Command::new("powershell")
+        .args(&[
+            "-NoProfile",
+            "-Command",
+            "(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine | Measure-Object -Property UtilizationPercentage -Sum).Sum; (Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory | Measure-Object -Property DedicatedUsage -Sum).Sum"
+        ])
+        .output()
+    {
+        let s = String::from_utf8_lossy(&output.stdout);
+        let mut lines = s.lines();
+        let util = lines.next().and_then(|l| l.trim().parse::<f32>().ok()).unwrap_or(0.0);
+        let vram = lines.next().and_then(|l| l.trim().parse::<u64>().ok()).unwrap_or(0);
+        (util, vram)
+    } else {
+        (0.0, 0)
+    }
 }

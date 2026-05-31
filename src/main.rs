@@ -507,12 +507,12 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
             .title(" LOGICAL CORES MATRIX "));
     frame.render_widget(cores_widget, cpu_sub_layout[1]);
 
-    // 3. Memory Gauges Block
+    // 3. Memory & GPU Gauges Block
     let mem_sub_layout = Layout::default()
-        .direction(Direction::Horizontal)
+        .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage(50), // RAM utilization
-            Constraint::Percentage(50), // Swap utilization
+            Constraint::Length(3), // RAM utilization
+            Constraint::Length(3), // GPU utilization
         ])
         .split(left_chunks[2]);
 
@@ -521,34 +521,38 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
     let ram_total = snapshot_ref.total_memory;
     let ram_pct = if ram_total > 0 { (ram_used as f64 / ram_total as f64) * 100.0 } else { 0.0 };
     let ram_color = if ram_pct < 60.0 { Color::Rgb(52, 211, 153) } else if ram_pct < 85.0 { Color::Rgb(251, 191, 36) } else { Color::Rgb(251, 113, 133) };
+    let ram_label = format!("{:.1}% ({}/{})", ram_pct, format_bytes(ram_used), format_bytes(ram_total));
     
-    let ram_widget = Gauge::default()
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color))
-            .title(" RAM UTILIZATION ")
-            .title_style(Style::default().fg(theme_indigo)))
-        .gauge_style(Style::default().fg(ram_color).bg(Color::Rgb(30, 41, 59)))
-        .ratio(ram_used as f64 / ram_total.max(1) as f64)
-        .label(format!("{:.1}% ({}/{})", ram_pct, format_bytes(ram_used), format_bytes(ram_total)));
-    frame.render_widget(ram_widget, mem_sub_layout[0]);
+    draw_metric_gauge(
+        frame,
+        mem_sub_layout[0],
+        "RAM UTILIZATION",
+        ram_used as f64 / ram_total.max(1) as f64,
+        &ram_label,
+        ram_color,
+        Color::Rgb(30, 41, 59),
+        border_color,
+        theme_indigo,
+    );
 
-    // Swap
-    let swap_used = snapshot_ref.used_swap;
-    let swap_total = snapshot_ref.total_swap;
-    let swap_pct = if swap_total > 0 { (swap_used as f64 / swap_total as f64) * 100.0 } else { 0.0 };
-    let swap_color = if swap_pct < 60.0 { Color::Rgb(52, 211, 153) } else if swap_pct < 85.0 { Color::Rgb(251, 191, 36) } else { Color::Rgb(251, 113, 133) };
+    // GPU
+    let gpu_used = snapshot_ref.gpu_vram_used;
+    let gpu_total = snapshot_ref.gpu_vram_total;
+    let gpu_pct = snapshot_ref.gpu_usage;
+    let gpu_color = if gpu_pct < 60.0 { Color::Rgb(52, 211, 153) } else if gpu_pct < 85.0 { Color::Rgb(251, 191, 36) } else { Color::Rgb(251, 113, 133) };
+    let gpu_label = format!("{:.1}% ({}/{})", gpu_pct, format_bytes(gpu_used), format_bytes(gpu_total));
 
-    let swap_widget = Gauge::default()
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color))
-            .title(" SWAP UTILIZATION ")
-            .title_style(Style::default().fg(theme_indigo)))
-        .gauge_style(Style::default().fg(swap_color).bg(Color::Rgb(30, 41, 59)))
-        .ratio(swap_used as f64 / swap_total.max(1) as f64)
-        .label(format!("{:.1}% ({}/{})", swap_pct, format_bytes(swap_used), format_bytes(swap_total)));
-    frame.render_widget(swap_widget, mem_sub_layout[1]);
+    draw_metric_gauge(
+        frame,
+        mem_sub_layout[1],
+        "GPU UTILIZATION",
+        gpu_pct as f64 / 100.0,
+        &gpu_label,
+        gpu_color,
+        Color::Rgb(30, 41, 59),
+        border_color,
+        theme_indigo,
+    );
 
     // 4. Storage & Network Speed (Combined Layout Block)
     let bottom_chunks = Layout::default()
@@ -893,4 +897,42 @@ fn format_bytes(bytes: u64) -> String {
 /// Network speed formatting utility
 fn format_speed(bytes_per_sec: u64) -> String {
     format!("{}/s", format_bytes(bytes_per_sec))
+}
+
+fn draw_metric_gauge(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    title: &str,
+    ratio: f64,
+    label: &str,
+    color: Color,
+    bg_color: Color,
+    border_color: Color,
+    title_color: Color,
+) {
+    if area.width < 30 {
+        // Drop title/borders, render a highly packed metric indicator:
+        // [▓▓░░] 45%
+        let pct = (ratio * 100.0).round() as usize;
+        let total_chars = (area.width as usize).saturating_sub(8).max(4);
+        let filled = (ratio * total_chars as f64).round() as usize;
+        let filled = filled.min(total_chars);
+        let bar: String = std::iter::repeat('▓').take(filled)
+            .chain(std::iter::repeat('░').take(total_chars - filled))
+            .collect();
+        let text = format!("[{}] {}%", bar, pct);
+        let p = Paragraph::new(Span::styled(text, Style::default().fg(color).bold()));
+        frame.render_widget(p, area);
+    } else {
+        let gauge = Gauge::default()
+            .block(Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border_color))
+                .title(format!(" {} ", title))
+                .title_style(Style::default().fg(title_color)))
+            .gauge_style(Style::default().fg(color).bg(bg_color))
+            .ratio(ratio.clamp(0.0, 1.0))
+            .label(label);
+        frame.render_widget(gauge, area);
+    }
 }
