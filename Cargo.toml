@@ -13,3 +13,13 @@ crossterm = { version = "0.27", features = [] }
 sysinfo = "0.30"
 crossbeam-channel = "0.5"
 panic-hook = "0.1"
+cpal = "0.15"
+rustfft = "6.1"
+image = { version = "0.24", default-features = false, features = ["png", "jpeg"] }
+reqwest = { version = "0.11", features = ["blocking", "json"] }
+serde = { version = "1.0", features = ["derive"] }
+windows = { version = "0.52", features = [
+    "Media_Control",
+    "Foundation",
+    "Storage_Streams"
+] }
