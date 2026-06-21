@@ -21,6 +21,7 @@ pub enum MediaEvent {
     Metadata(Box<MediaMetadata>),
     Thumbnail(Vec<u8>),
     NoMedia,
+    Timeline(f64, f64, std::time::Instant), // position_secs, total_secs, captured_at
 }
 
 // Deserialization structures for MusicBrainz API payload
@@ -41,19 +42,13 @@ struct MBRelease {
     date: Option<String>,
 }
 
-/// Spawns a background thread that polls the Windows GSMTC for active media playback,
-/// extracts cover art, and spawns asynchronous year resolution web requests.
 pub fn spawn_media_controls_thread(tx: Sender<MediaEvent>) -> Option<thread::JoinHandle<()>> {
     thread::spawn(move || {
-        // Initialize the GSMTC Manager (WinRT async resolved blocking)
         let manager = match GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
             .and_then(|op| op.get())
         {
             Ok(mgr) => mgr,
-            Err(_) => {
-                // If GSMTC is unavailable on this OS build, exit thread
-                return;
-            }
+            Err(_) => return,
         };
 
         let mut last_track_identifier = String::new();
@@ -62,10 +57,8 @@ pub fn spawn_media_controls_thread(tx: Sender<MediaEvent>) -> Option<thread::Joi
         let mut last_art_hash = 0usize;
 
         loop {
-            // Poll GSMTC state every 1000ms
             thread::sleep(Duration::from_millis(1000));
 
-            // Retrieve active session
             let session = match manager.GetCurrentSession() {
                 Ok(sess) => sess,
                 Err(_) => {
@@ -75,7 +68,6 @@ pub fn spawn_media_controls_thread(tx: Sender<MediaEvent>) -> Option<thread::Joi
                 }
             };
 
-            // 1. Get Playback Info (IsPlaying status)
             let is_playing = match session.GetPlaybackInfo() {
                 Ok(info) => match info.PlaybackStatus() {
                     Ok(status) => status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing,
@@ -84,7 +76,6 @@ pub fn spawn_media_controls_thread(tx: Sender<MediaEvent>) -> Option<thread::Joi
                 Err(_) => false,
             };
 
-            // 2. Get Media Properties (Title, Artist, Album)
             let props = match session.TryGetMediaPropertiesAsync()
                 .and_then(|op| op.get())
             {
@@ -106,17 +97,14 @@ pub fn spawn_media_controls_thread(tx: Sender<MediaEvent>) -> Option<thread::Joi
                 continue;
             }
 
-            // Create a unique identifier to verify track changes
             let current_track_identifier = format!("{}|{}|{}", title, artist, album);
             let track_changed = current_track_identifier != last_track_identifier;
             
-            // Check if year needs resolving (resolved on track change)
             if track_changed {
                 last_track_identifier = current_track_identifier.clone();
                 last_playback_state = is_playing;
                 *last_year.lock().unwrap() = None;
                 
-                // Immediately emit local metadata update with year as None (Pending)
                 let initial_meta = Box::new(MediaMetadata {
                     title: title.clone(),
                     artist: artist.clone(),
@@ -126,7 +114,6 @@ pub fn spawn_media_controls_thread(tx: Sender<MediaEvent>) -> Option<thread::Joi
                 });
                 let _ = tx.send(MediaEvent::Metadata(initial_meta));
 
-                // Spawn non-blocking background thread to perform MusicBrainz API lookup
                 let tx_clone = tx.clone();
                 let title_query = title.clone();
                 let artist_query = artist.clone();
@@ -147,7 +134,6 @@ pub fn spawn_media_controls_thread(tx: Sender<MediaEvent>) -> Option<thread::Joi
                     }
                 });
 
-                // Extract Album Art Thumbnail via GSMTC raw byte stream
                 if let Ok(ref_stream) = props.Thumbnail() {
                     if let Ok(stream) = ref_stream.OpenReadAsync().and_then(|op| op.get()) {
                         let size = stream.Size().unwrap_or(0);
@@ -171,7 +157,6 @@ pub fn spawn_media_controls_thread(tx: Sender<MediaEvent>) -> Option<thread::Joi
                     }
                 }
             } else if is_playing != last_playback_state {
-                // If only playback state changed, emit updated metadata retaining existing year
                 last_playback_state = is_playing;
                 let year_val = last_year.lock().unwrap().clone();
                 let updated_meta = Box::new(MediaMetadata {
@@ -183,11 +168,16 @@ pub fn spawn_media_controls_thread(tx: Sender<MediaEvent>) -> Option<thread::Joi
                 });
                 let _ = tx.send(MediaEvent::Metadata(updated_meta));
             }
+
+            if let Ok(timeline) = session.GetTimelineProperties() {
+                let pos = timeline.Position().unwrap_or_default().Duration as f64 / 10_000_000.0;
+                let end = timeline.EndTime().unwrap_or_default().Duration as f64 / 10_000_000.0;
+                let _ = tx.send(MediaEvent::Timeline(pos, end, std::time::Instant::now()));
+            }
         }
     }).into()
 }
 
-/// Resolves release year using the MusicBrainz recording search API.
 fn resolve_release_year(title: &str, artist: &str) -> Option<String> {
     let client = match reqwest::blocking::Client::builder()
         .user_agent("win11_sys_mon/0.1.0 ( saqinnoor@example.com )")
@@ -198,7 +188,6 @@ fn resolve_release_year(title: &str, artist: &str) -> Option<String> {
         Err(_) => return None,
     };
 
-    // Format query string with explicit filters for Title and Artist
     let query = format!("artist:\"{}\" AND recording:\"{}\"", artist, title);
     
     let response = client
@@ -213,13 +202,11 @@ fn resolve_release_year(title: &str, artist: &str) -> Option<String> {
     let mb_data: MBResponse = response.json().ok()?;
     if let Some(recordings) = mb_data.recordings {
         for rec in recordings {
-            // Attempt to read direct recording release date first
             if let Some(date_str) = rec.first_release_date {
                 if date_str.len() >= 4 {
                     return Some(date_str[0..4].to_string());
                 }
             }
-            // Fallback to iterating inner releases dates
             if let Some(releases) = rec.releases {
                 for rel in releases {
                     if let Some(date_str) = rel.date {

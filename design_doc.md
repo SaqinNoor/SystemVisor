@@ -48,12 +48,14 @@ tokio = { version = "1.0", features = ["rt-multi-thread", "time"] }
 * **The Strategy:** Introduce real-time graphics hardware monitoring. Because the Windows `sysinfo` crate lacks full native GPU telemetry extraction profiles, harness the Windows Runtime APIs or WMI performance counters to populate a unified hardware data object.
 * **Metrics to Sample:** 1. Global 3D Core Utilization Percentage
   2. VRAM Allocation (Allocated vs Total Memory Pool)
-  3. Core Thermal Temperatures (where vendor-exposed)
+  <!-- deferred: 3. Core Thermal Temperatures (where vendor-exposed) -->
 * **UI Integration:** Place the GPU module in the primary system column directly beneath the RAM block, leveraging identical full-width structural gauges.
 
 ### D. Layout Fluidity Engine & Text Marquee Scroller (Feature 4)
 To match the aesthetic of classic high-performance terminal layout tools, elements must never clip or trigger raw design breaks.
+<!-- deferred 1D.1:
 1. **Dynamic Clamping:** Enforce minimum character layout cut-offs. If a layout row width is too narrow to print a metric title alongside its data string, drop the title prefix entirely and render a compact raw digit gauge (`[▓▓░░] 45%`).
+-->
 2. **Text Marquee Engine:** For variable string data (Track Titles, Artists, Long Process Names) that exceed the layout cell width, build an automated textual carousel.
 
 ```rust
