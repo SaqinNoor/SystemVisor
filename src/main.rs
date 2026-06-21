@@ -17,7 +17,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, Paragraph, Row, Table, TableState, Sparkline, Cell},
+    widgets::{Block, Borders, Clear, Gauge, Paragraph, Row, Table, TableState, Sparkline, Cell},
     Terminal,
 };
 use telemetry::{SystemSnapshot, ProcessInfo};
@@ -68,24 +68,30 @@ struct ColorTheme {
 }
 
 const THEMES: &[ColorTheme] = &[
-    ColorTheme { name: "Default",       border: Color::Rgb( 71,  85, 105), highlight: Color::Rgb( 34, 211, 238), neutral: Color::Rgb(226, 232, 240), accent1: Color::Rgb(167, 139, 250), accent2: Color::Rgb(129, 140, 248) },
-    ColorTheme { name: "Nord",          border: Color::Rgb( 76,  86, 106), highlight: Color::Rgb(136, 192, 208), neutral: Color::Rgb(216, 222, 233), accent1: Color::Rgb(129, 161, 193), accent2: Color::Rgb( 94, 129, 172) },
-    ColorTheme { name: "Gruvbox Dark",  border: Color::Rgb( 80,  73,  69), highlight: Color::Rgb(184, 147,  85), neutral: Color::Rgb(235, 219, 178), accent1: Color::Rgb(204,  56,  42), accent2: Color::Rgb(152, 151,  26) },
-    ColorTheme { name: "Catppuccin",    border: Color::Rgb( 91,  96, 120), highlight: Color::Rgb(138, 173, 244), neutral: Color::Rgb(202, 211, 245), accent1: Color::Rgb(245, 194, 231), accent2: Color::Rgb(180, 190, 254) },
-    ColorTheme { name: "Dracula",       border: Color::Rgb( 98, 114, 164), highlight: Color::Rgb( 80, 250, 123), neutral: Color::Rgb(248, 248, 242), accent1: Color::Rgb(255, 121, 198), accent2: Color::Rgb(189, 147, 249) },
-    ColorTheme { name: "Tokyo Night",   border: Color::Rgb( 86,  95, 137), highlight: Color::Rgb(122, 162, 247), neutral: Color::Rgb(169, 177, 214), accent1: Color::Rgb(187, 154, 247), accent2: Color::Rgb(247, 163, 163) },
-    ColorTheme { name: "Monochrome",    border: Color::Rgb(100, 100, 100), highlight: Color::Rgb(255, 255, 255), neutral: Color::Rgb(200, 200, 200), accent1: Color::Rgb(150, 150, 150), accent2: Color::Rgb(128, 128, 128) },
+    // Border=Muted, Highlight=Primary, Neutral=Foreground, Accent1=Secondary, Accent2=Blue/Info
+    ColorTheme { name: "tokyonight",        border: clr(0x56,0x5f,0x89), highlight: clr(0x7a,0xa2,0xf7), neutral: clr(0xc0,0xca,0xf5), accent1: clr(0xbb,0x9a,0xf7), accent2: clr(0x7a,0xa2,0xf7) },
+    ColorTheme { name: "everforest",        border: clr(0x7a,0x84,0x78), highlight: clr(0xa7,0xc0,0x80), neutral: clr(0xd3,0xc6,0xaa), accent1: clr(0x7f,0xbb,0xb3), accent2: clr(0x7f,0xbb,0xb3) },
+    ColorTheme { name: "ayu",               border: clr(0x62,0x6a,0x73), highlight: clr(0xff,0xb4,0x54), neutral: clr(0xb3,0xb1,0xad), accent1: clr(0x59,0xc2,0xff), accent2: clr(0x39,0xba,0xe6) },
+    ColorTheme { name: "catppuccin",        border: clr(0x6c,0x70,0x86), highlight: clr(0xcb,0xa6,0xf7), neutral: clr(0xcd,0xd6,0xf4), accent1: clr(0x89,0xb4,0xfa), accent2: clr(0x89,0xb4,0xfa) },
+    ColorTheme { name: "gruvbox",           border: clr(0x92,0x83,0x74), highlight: clr(0xfa,0xbd,0x2f), neutral: clr(0xeb,0xdb,0xb2), accent1: clr(0x83,0xa5,0x98), accent2: clr(0x83,0xa5,0x98) },
+    ColorTheme { name: "kanagawa",          border: clr(0x72,0x71,0x69), highlight: clr(0x95,0x7f,0xb8), neutral: clr(0xdc,0xd7,0xba), accent1: clr(0x7e,0x9c,0xd8), accent2: clr(0x7e,0x9c,0xd8) },
+    ColorTheme { name: "nord",              border: clr(0x4c,0x56,0x6a), highlight: clr(0x88,0xc0,0xd0), neutral: clr(0xd8,0xde,0xe9), accent1: clr(0x81,0xa1,0xc1), accent2: clr(0x88,0xc0,0xd0) },
+    ColorTheme { name: "one-dark",          border: clr(0x5c,0x63,0x70), highlight: clr(0x61,0xaf,0xef), neutral: clr(0xab,0xb2,0xbf), accent1: clr(0xc6,0x78,0xdd), accent2: clr(0x61,0xaf,0xef) },
+    ColorTheme { name: "matrix",            border: clr(0x00,0x5f,0x1a), highlight: clr(0x00,0xff,0x41), neutral: clr(0x00,0xff,0x41), accent1: clr(0x00,0x8f,0x11), accent2: clr(0x00,0xff,0x41) },
 ];
+
+const fn clr(r: u8, g: u8, b: u8) -> Color { Color::Rgb(r, g, b) }
 
 /// Animated text marquee for overflowing strings.
 struct ScrollingText {
     content: String,
     tick_offset: usize,
+    last_tick: std::time::Instant,
 }
 
 impl ScrollingText {
     fn new(content: String) -> Self {
-        Self { content, tick_offset: 0 }
+        Self { content, tick_offset: 0, last_tick: std::time::Instant::now() }
     }
 
     fn get_visible_slice(&mut self, max_width: usize) -> String {
@@ -102,7 +108,11 @@ impl ScrollingText {
     }
 
     fn tick(&mut self) {
-        self.tick_offset = self.tick_offset.wrapping_add(1);
+        let now = std::time::Instant::now();
+        if now.duration_since(self.last_tick) >= std::time::Duration::from_millis(280) {
+            self.last_tick = now;
+            self.tick_offset = self.tick_offset.wrapping_add(1);
+        }
     }
 }
 
@@ -130,6 +140,8 @@ struct App {
     album_art_matrix: Option<Vec<Vec<(u8, u8, u8)>>>,
     marquee_title: ScrollingText,
     marquee_artist: ScrollingText,
+    header_scroll: ScrollingText,
+    footer_scroll: ScrollingText,
 
     // GPU telemetry
     gpu_data: Option<gpu_telemetry::GpuSnapshot>,
@@ -139,6 +151,8 @@ struct App {
 
     // Theme
     theme_index: usize,
+    show_theme_picker: bool,
+    theme_picker_index: usize,
 }
 
 impl App {
@@ -158,9 +172,13 @@ impl App {
             album_art_matrix: None,
             marquee_title: ScrollingText::new(String::new()),
             marquee_artist: ScrollingText::new(String::new()),
+            header_scroll: ScrollingText::new(String::new()),
+            footer_scroll: ScrollingText::new(String::new()),
             gpu_data: None,
             right_view: RightView::Media,
             theme_index: 0,
+            show_theme_picker: false,
+            theme_picker_index: 0,
         }
     }
 
@@ -356,7 +374,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             break;
                         }
 
-                        match key.code {
+                        // Theme picker modal input handling
+                        if app.show_theme_picker {
+                            match key.code {
+                                KeyCode::Up | KeyCode::Char('k') => {
+                                    app.theme_picker_index = app.theme_picker_index.saturating_sub(1);
+                                }
+                                KeyCode::Down | KeyCode::Char('j') => {
+                                    let max = THEMES.len().saturating_sub(1);
+                                    if app.theme_picker_index < max {
+                                        app.theme_picker_index += 1;
+                                    }
+                                }
+                                KeyCode::Enter => {
+                                    app.theme_index = app.theme_picker_index;
+                                    app.show_theme_picker = false;
+                                }
+                                KeyCode::Esc | KeyCode::Char('q') => {
+                                    app.show_theme_picker = false;
+                                }
+                                _ => {}
+                            }
+                        } else {
+                            match key.code {
                             KeyCode::Tab | KeyCode::Char('s') => {
                                 app.sort_column = app.sort_column.cycle();
                                 if let Some(snap) = app.snapshot.clone() {
@@ -418,9 +458,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 };
                             }
                             KeyCode::Char('t') => {
-                                app.theme_index = (app.theme_index + 1) % THEMES.len();
+                                app.show_theme_picker = true;
+                                app.theme_picker_index = app.theme_index;
                             }
                             _ => {}
+                        }
                         }
                     }
                     Ok(AppEvent::Resize(_, _)) => {}
@@ -502,9 +544,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        // Advance marquee tick each frame
+        // Advance marquee ticks each frame
         app.marquee_title.tick();
         app.marquee_artist.tick();
+        app.header_scroll.tick();
+        app.footer_scroll.tick();
 
         // Draw TUI frame
         terminal.draw(|f| draw_ui(f, &mut app))?;
@@ -560,19 +604,24 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
 
     // --- LEFT COLUMN: SYSTEM TELEMETRY MONITOR ---
 
-    // 1. Host Header Banner (Zero-Emoji)
-    let uptime_str = format_uptime(snapshot_ref.uptime);
-    let title_line = Line::from(vec![
-        Span::styled(" WIN11 TELEMETRY SYSTEM MONITOR ", Style::default().fg(text_highlight).add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" Host: {} ", snapshot_ref.host_name), Style::default().fg(text_neutral)),
-        Span::styled(format!(" | OS: {} {} ({}) ", snapshot_ref.os_name, snapshot_ref.os_version, snapshot_ref.cpu_arch), Style::default().fg(text_neutral)),
-        Span::styled(format!(" | Uptime: {} ", uptime_str), Style::default().fg(theme_violet)),
-    ]);
-    
-    let header_widget = Paragraph::new(title_line)
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color)));
+    // 1. Host Header Banner (marquee-scrolling)
+    let header_content = format!(
+        " SYSTEMVISOR  Host: {}  | OS: {} {} ({})  | Uptime: {} ",
+        snapshot_ref.host_name, snapshot_ref.os_name, snapshot_ref.os_version,
+        snapshot_ref.cpu_arch, format_uptime(snapshot_ref.uptime)
+    );
+    if app.header_scroll.content != header_content {
+        app.header_scroll.content = header_content;
+    }
+    let header_max = (left_chunks[0].width as usize).saturating_sub(2);
+    let header_visible = app.header_scroll.get_visible_slice(header_max);
+    let header_widget = Paragraph::new(Line::from(Span::styled(
+        header_visible,
+        Style::default().fg(text_highlight).add_modifier(Modifier::BOLD),
+    )))
+    .block(Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color)));
     frame.render_widget(header_widget, left_chunks[0]);
 
     // 2. CPU Logical Cores Dynamic Solver Grid
@@ -763,27 +812,26 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
     .style(Style::default().fg(text_neutral));
     frame.render_widget(net_table, bottom_chunks[1]);
 
-    // 5. Help Footer
+    // 5. Help Footer (marquee-scrolling)
     let sort_col_name = format!("{:?}", app.sort_column);
     let view_label = match app.right_view {
         RightView::Media => "Media",
         RightView::Processes => "Process",
     };
     let theme_name = THEMES[app.theme_index].name;
-    let footer_text = format!(
+    let footer_content = format!(
         " [q] Quit | [v] View({}) | [t] {} | [Tab/s] Sort | [r] Rev | [j/k] Scroll (Sort: {} {})",
         view_label,
         theme_name,
         sort_col_name,
         if app.sort_ascending { "Asc" } else { "Desc" }
     );
-    let footer_width = left_chunks[4].width as usize;
-    let footer_trimmed = if footer_text.len() > footer_width {
-        format!("{}..", &footer_text[..footer_width.saturating_sub(3)])
-    } else {
-        footer_text
-    };
-    let footer = Paragraph::new(Span::styled(footer_trimmed, Style::default().fg(Color::Rgb(148, 163, 184))));
+    if app.footer_scroll.content != footer_content {
+        app.footer_scroll.content = footer_content;
+    }
+    let footer_max = left_chunks[4].width as usize;
+    let footer_visible = app.footer_scroll.get_visible_slice(footer_max);
+    let footer = Paragraph::new(Span::styled(footer_visible, Style::default().fg(Color::Rgb(148, 163, 184))));
     frame.render_widget(footer, left_chunks[4]);
 
 
@@ -797,6 +845,54 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
             draw_process_table(frame, app, main_chunks[1], theme);
         }
     }
+
+    if app.show_theme_picker {
+        draw_theme_picker(frame, size, theme, app.theme_picker_index);
+    }
+}
+
+/// Draws the theme picker popup overlay.
+fn draw_theme_picker(frame: &mut ratatui::Frame, area: Rect, theme: &ColorTheme, picker_index: usize) {
+    let pick_w = 32.min(area.width.saturating_sub(4));
+    let pick_h = (THEMES.len() as u16 + 4).min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(pick_w)) / 2;
+    let y = (area.height.saturating_sub(pick_h)) / 2;
+    let popup = Rect { x, y, width: pick_w, height: pick_h };
+
+    frame.render_widget(Clear, popup);
+
+    let mut lines: Vec<Line> = Vec::with_capacity(THEMES.len() + 2);
+    lines.push(Line::from(Span::styled(
+        " SELECT THEME ",
+        Style::default().bold().fg(theme.highlight),
+    )));
+    lines.push(Line::from(Span::styled(
+        " ".to_string() + &"─".repeat((pick_w as usize).saturating_sub(2)),
+        Style::default().fg(theme.border),
+    )));
+    for (i, t) in THEMES.iter().enumerate() {
+        let marker = if i == picker_index { ">" } else { " " };
+        let style = if i == picker_index {
+            Style::default().fg(theme.highlight).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.neutral)
+        };
+        lines.push(Line::from(Span::styled(
+            format!(" {} {}", marker, t.name),
+            style,
+        )));
+    }
+    lines.push(Line::from(Span::styled(
+        " [arrows] move | [Enter] select | [Esc] cancel ",
+        Style::default().fg(theme.border),
+    )));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.highlight));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Draws the media dashboard + spectrum visualizer (View A)
