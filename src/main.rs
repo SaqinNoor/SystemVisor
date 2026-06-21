@@ -77,6 +77,35 @@ const THEMES: &[ColorTheme] = &[
     ColorTheme { name: "Monochrome",    border: Color::Rgb(100, 100, 100), highlight: Color::Rgb(255, 255, 255), neutral: Color::Rgb(200, 200, 200), accent1: Color::Rgb(150, 150, 150), accent2: Color::Rgb(128, 128, 128) },
 ];
 
+/// Animated text marquee for overflowing strings.
+struct ScrollingText {
+    content: String,
+    tick_offset: usize,
+}
+
+impl ScrollingText {
+    fn new(content: String) -> Self {
+        Self { content, tick_offset: 0 }
+    }
+
+    fn get_visible_slice(&mut self, max_width: usize) -> String {
+        let chars: Vec<char> = self.content.chars().collect();
+        if chars.len() <= max_width {
+            return self.content.clone();
+        }
+        let mut pool: Vec<char> = chars.clone();
+        pool.extend(vec![' ', ' ', '─', ' ', ' ']);
+        pool.extend(chars);
+        let start = self.tick_offset % (self.content.chars().count() + 5);
+        let end = (start + max_width).min(pool.len());
+        pool[start..end].iter().collect()
+    }
+
+    fn tick(&mut self) {
+        self.tick_offset = self.tick_offset.wrapping_add(1);
+    }
+}
+
 /// View state for the right column.
 enum RightView {
     Media,
@@ -99,6 +128,8 @@ struct App {
     // Media states
     media_metadata: Option<MediaMetadata>,
     album_art_matrix: Option<Vec<Vec<(u8, u8, u8)>>>,
+    marquee_title: ScrollingText,
+    marquee_artist: ScrollingText,
 
     // GPU telemetry
     gpu_data: Option<gpu_telemetry::GpuSnapshot>,
@@ -125,6 +156,8 @@ impl App {
             max_visualizer_bars: 16,
             media_metadata: None,
             album_art_matrix: None,
+            marquee_title: ScrollingText::new(String::new()),
+            marquee_artist: ScrollingText::new(String::new()),
             gpu_data: None,
             right_view: RightView::Media,
             theme_index: 0,
@@ -420,7 +453,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             recv(media_rx) -> media_res => {
                 match media_res {
                     Ok(MediaEvent::Metadata(meta)) => {
+                        let title_changed = app.media_metadata.as_ref().map(|m| &m.title) != Some(&meta.title);
+                        let artist_changed = app.media_metadata.as_ref().map(|m| &m.artist) != Some(&meta.artist);
                         app.media_metadata = Some(*meta);
+                        if title_changed {
+                            if let Some(m) = &app.media_metadata {
+                                app.marquee_title = ScrollingText::new(m.title.clone());
+                            }
+                        }
+                        if artist_changed {
+                            if let Some(m) = &app.media_metadata {
+                                app.marquee_artist = ScrollingText::new(m.artist.clone());
+                            }
+                        }
                     }
                     Ok(MediaEvent::Thumbnail(bytes)) => {
                         // Trigger cover art downsampling on a separate thread to keep UI locked fluid at 60fps
@@ -456,6 +501,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+
+        // Advance marquee tick each frame
+        app.marquee_title.tick();
+        app.marquee_artist.tick();
 
         // Draw TUI frame
         terminal.draw(|f| draw_ui(f, &mut app))?;
@@ -553,14 +602,22 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
     };
 
     let cpu_gauge = Gauge::default()
-        .block(Block::default().title(" SYSTEM CPU ").title_style(Style::default().fg(theme_indigo)))
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color))
+            .title(" SYSTEM CPU ")
+            .title_style(Style::default().fg(theme_indigo)))
         .gauge_style(Style::default().fg(cpu_color).bg(Color::Rgb(30, 41, 59)))
         .ratio(cpu_pct as f64 / 100.0)
         .label(format!("{:.1}%", cpu_pct));
     frame.render_widget(cpu_gauge, cpu_global_layout[0]);
 
     let sparkline = Sparkline::default()
-        .block(Block::default().title(" CPU HISTORY ").title_style(Style::default().fg(theme_indigo)))
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color))
+            .title(" CPU HISTORY ")
+            .title_style(Style::default().fg(theme_indigo)))
         .style(Style::default().fg(text_highlight))
         .data(&app.cpu_history);
     frame.render_widget(sparkline, cpu_global_layout[1]);
@@ -714,13 +771,19 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
     };
     let theme_name = THEMES[app.theme_index].name;
     let footer_text = format!(
-        " [q] Quit | [v] View({}) | [t] {} | [Tab/s] Cycle Sort | [r] Reverse | [1-4] Sort Col | [j/k] Scroll (Sort: {} {})",
+        " [q] Quit | [v] View({}) | [t] {} | [Tab/s] Sort | [r] Rev | [j/k] Scroll (Sort: {} {})",
         view_label,
         theme_name,
         sort_col_name,
         if app.sort_ascending { "Asc" } else { "Desc" }
     );
-    let footer = Paragraph::new(Span::styled(footer_text, Style::default().fg(Color::Rgb(148, 163, 184))));
+    let footer_width = left_chunks[4].width as usize;
+    let footer_trimmed = if footer_text.len() > footer_width {
+        format!("{}..", &footer_text[..footer_width.saturating_sub(3)])
+    } else {
+        footer_text
+    };
+    let footer = Paragraph::new(Span::styled(footer_trimmed, Style::default().fg(Color::Rgb(148, 163, 184))));
     frame.render_widget(footer, left_chunks[4]);
 
 
@@ -754,6 +817,7 @@ fn draw_media_view(
         .constraints([
             Constraint::Length(14), // Media Controls (Album art & track metadata)
             Constraint::Min(10),    // Real-time Frequency Spectrum Visualizer
+            Constraint::Length(1),  // Footer spacer to match left column
         ])
         .split(area);
 
@@ -816,12 +880,20 @@ fn draw_media_view(
             let status_style = if meta.is_playing { Style::default().fg(Color::Rgb(52, 211, 153)).bold() } else { Style::default().fg(Color::Yellow).bold() };
 
             let year_resolved = meta.year.as_deref().unwrap_or("Fetching...");
+
+            let text_max = (media_layout[1].width as usize).saturating_sub(4);
             
             vec![
                 Line::from(vec![Span::styled("Now Playing", Style::default().bold().fg(theme_violet))]),
                 Line::from(vec![Span::styled("------------------------", Style::default().fg(border_color))]),
-                Line::from(vec![Span::styled("Track:  ", Style::default().fg(theme_indigo)), Span::styled(meta.title.clone(), Style::default().bold().fg(Color::White))]),
-                Line::from(vec![Span::styled("Artist: ", Style::default().fg(theme_indigo)), Span::styled(meta.artist.clone(), Style::default().fg(text_neutral))]),
+                Line::from(vec![
+                    Span::styled("Track:  ", Style::default().fg(theme_indigo)),
+                    Span::styled(app.marquee_title.get_visible_slice(text_max.saturating_sub(8)), Style::default().bold().fg(Color::White))
+                ]),
+                Line::from(vec![
+                    Span::styled("Artist: ", Style::default().fg(theme_indigo)),
+                    Span::styled(app.marquee_artist.get_visible_slice(text_max.saturating_sub(8)), Style::default().fg(text_neutral))
+                ]),
                 Line::from(vec![Span::styled("Album:  ", Style::default().fg(theme_indigo)), Span::styled(meta.album.clone(), Style::default().fg(text_neutral))]),
                 Line::from(vec![
                     Span::styled("Year:   ", Style::default().fg(theme_indigo)),
@@ -847,6 +919,12 @@ fn draw_media_view(
 
     // 2. Real-time Frequency Spectrum Visualizer
     draw_spectrum_visualizer(frame, app, right_chunks[1], theme);
+
+    // 3. Footer spacer block to match left column height
+    let spacer = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+    frame.render_widget(spacer, right_chunks[2]);
 }
 
 /// Renders the process table in the right column (View B).
@@ -860,6 +938,15 @@ fn draw_process_table(
     let text_highlight = theme.highlight;
     let text_neutral = theme.neutral;
     let theme_indigo = theme.accent2;
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(10),
+            Constraint::Length(1),
+        ])
+        .split(area);
+
     let sort_indicator = |col: SortColumn| -> &'static str {
         if app.sort_column != col {
             return " ";
@@ -911,7 +998,12 @@ fn draw_process_table(
     .highlight_style(selected_style)
     .highlight_symbol(">");
 
-    frame.render_stateful_widget(table, area, &mut app.process_table_state);
+    frame.render_stateful_widget(table, chunks[0], &mut app.process_table_state);
+
+    let spacer = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+    frame.render_widget(spacer, chunks[1]);
 }
 
 /// Dynamic grid-layout solver mapping physical CPU logical cores into custom wraps
