@@ -57,6 +57,12 @@ impl SortColumn {
     }
 }
 
+/// View state for the right column.
+enum RightView {
+    Media,
+    Processes,
+}
+
 /// The state of the UI application.
 struct App {
     snapshot: Option<Box<SystemSnapshot>>,
@@ -76,6 +82,9 @@ struct App {
 
     // GPU telemetry
     gpu_data: Option<gpu_telemetry::GpuSnapshot>,
+
+    // Viewport toggle
+    right_view: RightView,
 }
 
 impl App {
@@ -94,6 +103,7 @@ impl App {
             media_metadata: None,
             album_art_matrix: None,
             gpu_data: None,
+            right_view: RightView::Media,
         }
     }
 
@@ -344,6 +354,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             KeyCode::End => {
                                 app.scroll_to_bottom();
                             }
+                            KeyCode::Char('v') => {
+                                app.right_view = match app.right_view {
+                                    RightView::Media => RightView::Processes,
+                                    RightView::Processes => RightView::Media,
+                                };
+                            }
                             _ => {}
                         }
                     }
@@ -445,14 +461,6 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
             Constraint::Length(1),  // Quick Help controls
         ])
         .split(main_chunks[0]);
-
-    let right_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(14), // Media Controls (Album art & track metadata)
-            Constraint::Min(10),    // Real-time Frequency Spectrum Visualizer
-        ])
-        .split(main_chunks[1]);
 
     // Slate Indigo palette color tokens
     let border_color = Color::Rgb(71, 85, 105);
@@ -672,8 +680,13 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
 
     // 5. Help Footer
     let sort_col_name = format!("{:?}", app.sort_column);
+    let view_label = match app.right_view {
+        RightView::Media => "Media",
+        RightView::Processes => "Process",
+    };
     let footer_text = format!(
-        " [q] Quit | [Tab/s] Cycle Sort | [r] Reverse | [1-4] Sort Col | [j/k] Scroll (Sort: {} {})",
+        " [q] Quit | [v] View({}) | [Tab/s] Cycle Sort | [r] Reverse | [1-4] Sort Col | [j/k] Scroll (Sort: {} {})",
+        view_label,
         sort_col_name,
         if app.sort_ascending { "Asc" } else { "Desc" }
     );
@@ -681,7 +694,36 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
     frame.render_widget(footer, left_chunks[4]);
 
 
-    // --- RIGHT COLUMN: MEDIA DASHBOARD & DSP SPECTRUM ---
+    // --- RIGHT COLUMN: VIEWPORT TOGGLE (MEDIA or PROCESS TABLE) ---
+
+    match app.right_view {
+        RightView::Media => {
+            draw_media_view(frame, app, main_chunks[1], border_color, text_highlight, text_neutral, theme_violet, theme_indigo);
+        }
+        RightView::Processes => {
+            draw_process_table(frame, app, main_chunks[1], border_color, text_highlight, text_neutral, theme_indigo);
+        }
+    }
+}
+
+/// Draws the media dashboard + spectrum visualizer (View A)
+fn draw_media_view(
+    frame: &mut ratatui::Frame,
+    app: &mut App,
+    area: Rect,
+    border_color: Color,
+    text_highlight: Color,
+    text_neutral: Color,
+    theme_violet: Color,
+    theme_indigo: Color,
+) {
+    let right_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(14), // Media Controls (Album art & track metadata)
+            Constraint::Min(10),    // Real-time Frequency Spectrum Visualizer
+        ])
+        .split(area);
 
     // 1. Media Control Dashboard Block (Album art + song info metadata)
     let media_block = Block::default()
@@ -776,6 +818,70 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
 
     // 2. Real-time Frequency Spectrum Visualizer (High-Fidelity Block drawing)
     draw_spectrum_visualizer(frame, app, right_chunks[1]);
+}
+
+/// Renders the process table in the right column (View B).
+fn draw_process_table(
+    frame: &mut ratatui::Frame,
+    app: &mut App,
+    area: Rect,
+    border_color: Color,
+    text_highlight: Color,
+    text_neutral: Color,
+    theme_indigo: Color,
+) {
+    let sort_indicator = |col: SortColumn| -> &'static str {
+        if app.sort_column != col {
+            return " ";
+        }
+        if app.sort_ascending { " ^" } else { " v" }
+    };
+
+    let header_cells = [
+        format!(" PID{}", sort_indicator(SortColumn::Pid)),
+        format!(" Name{}", sort_indicator(SortColumn::Name)),
+        format!(" CPU%{}", sort_indicator(SortColumn::Cpu)),
+        format!(" Memory{}", sort_indicator(SortColumn::Memory)),
+    ];
+    let header = Row::new(header_cells.iter().map(|c| Cell::from(c.as_str())))
+        .style(Style::default().bold().fg(text_highlight));
+
+    let rows: Vec<Row> = app.sorted_processes.iter().map(|p| {
+        let mem_str = format_bytes(p.memory);
+        Row::new(vec![
+            Cell::from(format!(" {}", p.pid)),
+            Cell::from(format!(" {}", p.name)),
+            Cell::from(format!(" {:.1}", p.cpu_usage)),
+            Cell::from(format!(" {}", mem_str)),
+        ])
+        .style(Style::default().fg(text_neutral))
+    }).collect();
+
+    let selected_style = Style::default()
+        .fg(Color::Rgb(15, 23, 42))
+        .bg(text_highlight);
+
+    let table = Table::new(
+        rows,
+        vec![
+            Constraint::Length(8),
+            Constraint::Percentage(50),
+            Constraint::Length(8),
+            Constraint::Length(12),
+        ],
+    )
+    .header(header)
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color))
+            .title(format!(" SYSTEM PROCESSES ({}) ", app.sorted_processes.len()))
+            .title_style(Style::default().fg(theme_indigo)),
+    )
+    .highlight_style(selected_style)
+    .highlight_symbol(">");
+
+    frame.render_stateful_widget(table, area, &mut app.process_table_state);
 }
 
 /// Dynamic grid-layout solver mapping physical CPU logical cores into custom wraps
