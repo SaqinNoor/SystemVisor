@@ -23,7 +23,6 @@ use ratatui::{
 use telemetry::{SystemSnapshot, ProcessInfo};
 use media_controls::{MediaMetadata, MediaEvent};
 
-/// A Drop guard to guarantee the terminal returns to its normal state even on unexpected panics or exits.
 struct TerminalGuard;
 
 impl Drop for TerminalGuard {
@@ -57,7 +56,6 @@ impl SortColumn {
     }
 }
 
-/// A named color palette for the TUI.
 struct ColorTheme {
     name: &'static str,
     border: Color,
@@ -68,7 +66,6 @@ struct ColorTheme {
 }
 
 const THEMES: &[ColorTheme] = &[
-    // Border=Muted, Highlight=Primary, Neutral=Foreground, Accent1=Secondary, Accent2=Blue/Info
     ColorTheme { name: "tokyonight",        border: clr(0x56,0x5f,0x89), highlight: clr(0x7a,0xa2,0xf7), neutral: clr(0xc0,0xca,0xf5), accent1: clr(0xbb,0x9a,0xf7), accent2: clr(0x7a,0xa2,0xf7) },
     ColorTheme { name: "everforest",        border: clr(0x7a,0x84,0x78), highlight: clr(0xa7,0xc0,0x80), neutral: clr(0xd3,0xc6,0xaa), accent1: clr(0x7f,0xbb,0xb3), accent2: clr(0x7f,0xbb,0xb3) },
     ColorTheme { name: "ayu",               border: clr(0x62,0x6a,0x73), highlight: clr(0xff,0xb4,0x54), neutral: clr(0xb3,0xb1,0xad), accent1: clr(0x59,0xc2,0xff), accent2: clr(0x39,0xba,0xe6) },
@@ -82,7 +79,6 @@ const THEMES: &[ColorTheme] = &[
 
 const fn clr(r: u8, g: u8, b: u8) -> Color { Color::Rgb(r, g, b) }
 
-/// Animated text marquee for overflowing strings.
 struct ScrollingText {
     content: String,
     tick_offset: usize,
@@ -116,13 +112,11 @@ impl ScrollingText {
     }
 }
 
-/// View state for the right column.
 enum RightView {
     Media,
     Processes,
 }
 
-/// The state of the UI application.
 struct App {
     snapshot: Option<Box<SystemSnapshot>>,
     cpu_history: Vec<u64>,
@@ -130,26 +124,29 @@ struct App {
     sort_ascending: bool,
     process_table_state: TableState,
     sorted_processes: Vec<ProcessInfo>,
-    
-    // Audio Visualizer states
+
     visualizer_bars: Vec<f32>,
     max_visualizer_bars: usize,
 
-    // Media states
     media_metadata: Option<MediaMetadata>,
     album_art_matrix: Option<Vec<Vec<(u8, u8, u8)>>>,
     marquee_title: ScrollingText,
     marquee_artist: ScrollingText,
+    marquee_album: ScrollingText,
     header_scroll: ScrollingText,
     footer_scroll: ScrollingText,
 
-    // GPU telemetry
     gpu_data: Option<gpu_telemetry::GpuSnapshot>,
 
-    // Viewport toggle
+    media_position_secs: f64,
+    media_total_secs: f64,
+    media_position_captured_at: Option<std::time::Instant>,
+
+    art_target_w: u32,
+    art_target_h: u32,
+
     right_view: RightView,
 
-    // Theme
     theme_index: usize,
     show_theme_picker: bool,
     theme_picker_index: usize,
@@ -172,9 +169,15 @@ impl App {
             album_art_matrix: None,
             marquee_title: ScrollingText::new(String::new()),
             marquee_artist: ScrollingText::new(String::new()),
+            marquee_album: ScrollingText::new(String::new()),
             header_scroll: ScrollingText::new(String::new()),
             footer_scroll: ScrollingText::new(String::new()),
             gpu_data: None,
+            media_position_secs: 0.0,
+            media_total_secs: 0.0,
+            media_position_captured_at: None,
+            art_target_w: 30,
+            art_target_h: 14,
             right_view: RightView::Media,
             theme_index: 0,
             show_theme_picker: false,
@@ -182,7 +185,6 @@ impl App {
         }
     }
 
-    /// Update the snapshot and sort the inner processes.
     fn update_snapshot(&mut self, snap: Box<SystemSnapshot>) {
         self.cpu_history.push(snap.global_cpu_usage as u64);
         if self.cpu_history.len() > 120 {
@@ -275,11 +277,10 @@ impl App {
 
 enum AppEvent {
     Key(KeyEvent),
-    Resize(u16, u16),
+    Resize,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Terminal setup (raw mode, alternate screen, capture mouse, hide cursor)
     enable_raw_mode()?;
     let mut stdout_stream = stdout();
     execute!(
@@ -289,10 +290,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Hide
     )?;
     
-    // Explicit Drop guard to ensure cleanup on normal exit
     let _guard = TerminalGuard;
 
-    // Set custom panic hook to reset the terminal on panics
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
         let _ = disable_raw_mode();
@@ -305,7 +304,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         original_hook(panic_info);
     }));
 
-    // 2. Setup channels & spawn background worker threads
     let (telemetry_tx, telemetry_rx) = crossbeam_channel::unbounded();
     let (input_tx, input_rx) = crossbeam_channel::unbounded();
     let (audio_tx, audio_rx) = crossbeam_channel::unbounded();
@@ -313,7 +311,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (art_tx, art_rx) = crossbeam_channel::unbounded();
     let (gpu_tx, gpu_rx) = crossbeam_channel::unbounded();
 
-    // Input polling thread
     std::thread::spawn(move || {
         loop {
             if event::poll(Duration::from_millis(50)).unwrap_or(false) {
@@ -325,8 +322,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
-                    Ok(event::Event::Resize(w, h)) => {
-                        if input_tx.send(AppEvent::Resize(w, h)).is_err() {
+                    Ok(event::Event::Resize(_, _)) => {
+                        if input_tx.send(AppEvent::Resize).is_err() {
                             break;
                         }
                     }
@@ -336,26 +333,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Telemetry gathering thread (refresh metrics every 500ms)
     telemetry::spawn_telemetry_thread(telemetry_tx, Duration::from_millis(500));
-
-    // Audio capturing loopback visualizer thread
     audio_visualizer::spawn_audio_visualizer_thread(audio_tx);
-
-    // Media tracking and online metadata year resolver thread
     media_controls::spawn_media_controls_thread(media_tx);
-
-    // GPU telemetry polling thread (single long-lived PowerShell process)
     gpu_telemetry::spawn_gpu_telemetry_thread(gpu_tx);
 
-    // 3. Initialize terminal and application state
     let backend = CrosstermBackend::new(stdout_stream);
     let mut terminal = Terminal::new(backend)?;
     let mut app = App::new();
 
     terminal.clear()?;
 
-    // 4. Main Event Selector Loop
     loop {
         crossbeam_channel::select! {
             recv(telemetry_rx) -> telemetry_res => {
@@ -374,7 +362,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             break;
                         }
 
-                        // Theme picker modal input handling
                         if app.show_theme_picker {
                             match key.code {
                                 KeyCode::Up | KeyCode::Char('k') => {
@@ -465,7 +452,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         }
                     }
-                    Ok(AppEvent::Resize(_, _)) => {}
+                    Ok(AppEvent::Resize) => {}
                     Err(_) => break,
                 }
             }
@@ -476,7 +463,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if app.visualizer_bars.len() != target {
                             app.visualizer_bars.resize(target, 0.0);
                         }
-                        // Linear interpolation to map 16 FFT bands to target bar count
                         let band_count = spectrum.len();
                         for j in 0..target {
                             let pos = j as f32 * (band_count - 1) as f32 / target as f32;
@@ -497,6 +483,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(MediaEvent::Metadata(meta)) => {
                         let title_changed = app.media_metadata.as_ref().map(|m| &m.title) != Some(&meta.title);
                         let artist_changed = app.media_metadata.as_ref().map(|m| &m.artist) != Some(&meta.artist);
+                        let album_changed = app.media_metadata.as_ref().map(|m| &m.album) != Some(&meta.album);
                         app.media_metadata = Some(*meta);
                         if title_changed {
                             if let Some(m) = &app.media_metadata {
@@ -508,16 +495,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 app.marquee_artist = ScrollingText::new(m.artist.clone());
                             }
                         }
+                        if album_changed {
+                            if let Some(m) = &app.media_metadata {
+                                app.marquee_album = ScrollingText::new(m.album.clone());
+                            }
+                        }
                     }
                     Ok(MediaEvent::Thumbnail(bytes)) => {
-                        // Trigger cover art downsampling on a separate thread to keep UI locked fluid at 60fps
                         let art_tx_clone = art_tx.clone();
+                        let art_w = app.art_target_w.max(2);
+                        let art_h = app.art_target_h.max(2);
                         std::thread::spawn(move || {
-                            // Target grid coordinates: 20 cols by 10 rows (downsamples internally to 20x20 pixels)
-                            if let Some(matrix) = art_processor::process_album_art(&bytes, 20, 10) {
+                            if let Some(matrix) = art_processor::process_album_art(&bytes, art_w, art_h) {
                                 let _ = art_tx_clone.send(matrix);
                             }
                         });
+                    }
+                    Ok(MediaEvent::Timeline(pos, total, captured_at)) => {
+                        let now = std::time::Instant::now();
+                        let new_effective = pos + now.duration_since(captured_at).as_secs_f64();
+                        let old_effective = app.media_position_secs
+                            + app.media_position_captured_at
+                                .map(|t| now.duration_since(t).as_secs_f64())
+                                .unwrap_or(0.0);
+                        if new_effective > old_effective {
+                            app.media_position_secs = new_effective;
+                            app.media_position_captured_at = Some(now);
+                        } else {
+                            app.media_position_captured_at = Some(now);
+                        }
+                        app.media_total_secs = total;
                     }
                     Ok(MediaEvent::NoMedia) => {
                         app.media_metadata = None;
@@ -544,45 +551,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        // Advance marquee ticks each frame
         app.marquee_title.tick();
         app.marquee_artist.tick();
+        app.marquee_album.tick();
         app.header_scroll.tick();
         app.footer_scroll.tick();
 
-        // Draw TUI frame
         terminal.draw(|f| draw_ui(f, &mut app))?;
     }
 
     Ok(())
 }
 
-/// Centralized UI compiler. Implements a zero-emoji visual policy.
 fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
     let size = frame.size();
 
-    // Minimalist geometry division: Split screen horizontally
     let main_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .margin(1)
         .constraints([
-            Constraint::Percentage(50), // System Telemetry Monitor (Left column)
-            Constraint::Percentage(50), // Media Dashboard & Audio Spectrum (Right column)
+            Constraint::Percentage(50),
+            Constraint::Percentage(50),
         ])
         .split(size);
 
     let left_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // Host Header Banner
-            Constraint::Length(11), // Logical CPU Cores Matrix Grid (Dynamic solver)
-            Constraint::Length(6),  // Memory Gauges block
-            Constraint::Min(8),     // Storage and Network Speed
-            Constraint::Length(1),  // Quick Help controls
+            Constraint::Length(3),
+            Constraint::Length(11),
+            Constraint::Length(6),
+            Constraint::Min(8),
+            Constraint::Length(1),
         ])
         .split(main_chunks[0]);
 
-    // Resolve active theme
     let theme = &THEMES[app.theme_index];
     let border_color = theme.border;
     let text_highlight = theme.highlight;
@@ -590,7 +593,6 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
     let theme_violet = theme.accent1;
     let theme_indigo = theme.accent2;
 
-    // Retrieve snap reference
     let snapshot_ref = match &app.snapshot {
         Some(snap) => snap,
         None => {
@@ -602,9 +604,6 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
         }
     };
 
-    // --- LEFT COLUMN: SYSTEM TELEMETRY MONITOR ---
-
-    // 1. Host Header Banner (marquee-scrolling)
     let header_content = format!(
         " SYSTEMVISOR  Host: {}  | OS: {} {} ({})  | Uptime: {} ",
         snapshot_ref.host_name, snapshot_ref.os_name, snapshot_ref.os_version,
@@ -624,20 +623,19 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
         .border_style(Style::default().fg(border_color)));
     frame.render_widget(header_widget, left_chunks[0]);
 
-    // 2. CPU Logical Cores Dynamic Solver Grid
     let cpu_sub_layout = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(35), // Global CPU usage gauge & Sparkline
-            Constraint::Percentage(65), // Dynamic Grid per-core solver
+            Constraint::Percentage(35),
+            Constraint::Percentage(65),
         ])
         .split(left_chunks[1]);
 
     let cpu_global_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Global Gauge
-            Constraint::Min(4),    // Global History Sparkline
+            Constraint::Length(3),
+            Constraint::Min(4),
         ])
         .split(cpu_sub_layout[0]);
 
@@ -671,7 +669,6 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
         .data(&app.cpu_history);
     frame.render_widget(sparkline, cpu_global_layout[1]);
 
-    // Calculate core display width and solve columns solver programmatically
     let cores_block_width = cpu_sub_layout[1].width;
     let cores_widget = render_cpu_cores_table(&snapshot_ref.per_core_cpu_usage, cores_block_width)
         .block(Block::default()
@@ -680,16 +677,14 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
             .title(" LOGICAL CORES MATRIX "));
     frame.render_widget(cores_widget, cpu_sub_layout[1]);
 
-    // 3. Memory & GPU Gauges Block
     let mem_sub_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // RAM utilization
-            Constraint::Length(3), // GPU utilization
+            Constraint::Length(3),
+            Constraint::Length(3),
         ])
         .split(left_chunks[2]);
 
-    // RAM
     let ram_used = snapshot_ref.used_memory;
     let ram_total = snapshot_ref.total_memory;
     let ram_pct = if ram_total > 0 { (ram_used as f64 / ram_total as f64) * 100.0 } else { 0.0 };
@@ -708,7 +703,6 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
         theme_indigo,
     );
 
-    // GPU
     let (gpu_pct, gpu_used, gpu_total) = match &app.gpu_data {
         Some(g) => (g.utilization, g.vram_used, g.vram_total),
         None => (0.0, 0, 0),
@@ -728,7 +722,6 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
         theme_indigo,
     );
 
-    // 4. Storage & Network Speed (Combined Layout Block)
     let bottom_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -775,7 +768,6 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
         .title(" STORAGE DEVICES "));
     frame.render_widget(disk_table, bottom_chunks[0]);
 
-    // Network throughput
     let rx_formatted = format_speed(snapshot_ref.net_rx_bytes_sec);
     let tx_formatted = format_speed(snapshot_ref.net_tx_bytes_sec);
     let rx_tot = format_bytes(snapshot_ref.net_total_rx);
@@ -812,7 +804,6 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
     .style(Style::default().fg(text_neutral));
     frame.render_widget(net_table, bottom_chunks[1]);
 
-    // 5. Help Footer (marquee-scrolling)
     let sort_col_name = format!("{:?}", app.sort_column);
     let view_label = match app.right_view {
         RightView::Media => "Media",
@@ -835,8 +826,6 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
     frame.render_widget(footer, left_chunks[4]);
 
 
-    // --- RIGHT COLUMN: VIEWPORT TOGGLE (MEDIA or PROCESS TABLE) ---
-
     match app.right_view {
         RightView::Media => {
             draw_media_view(frame, app, main_chunks[1], theme);
@@ -851,7 +840,6 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
     }
 }
 
-/// Draws the theme picker popup overlay.
 fn draw_theme_picker(frame: &mut ratatui::Frame, area: Rect, theme: &ColorTheme, picker_index: usize) {
     let pick_w = 32.min(area.width.saturating_sub(4));
     let pick_h = (THEMES.len() as u16 + 4).min(area.height.saturating_sub(4));
@@ -895,7 +883,6 @@ fn draw_theme_picker(frame: &mut ratatui::Frame, area: Rect, theme: &ColorTheme,
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// Draws the media dashboard + spectrum visualizer (View A)
 fn draw_media_view(
     frame: &mut ratatui::Frame,
     app: &mut App,
@@ -911,13 +898,12 @@ fn draw_media_view(
     let right_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(14), // Media Controls (Album art & track metadata)
-            Constraint::Min(10),    // Real-time Frequency Spectrum Visualizer
-            Constraint::Length(1),  // Footer spacer to match left column
+            Constraint::Min(14),
+            Constraint::Min(10),
+            Constraint::Length(1),
         ])
         .split(area);
 
-    // 1. Media Control Dashboard Block (Album art + song info metadata)
     let media_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color))
@@ -929,19 +915,42 @@ fn draw_media_view(
     let media_layout = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(22), // Downscaled blitted art (Width matches 20 pixels + borders)
-            Constraint::Min(10),    // Song metadata information
+            Constraint::Percentage(55), // Album art (scales with terminal width)
+            Constraint::Min(10),        // Song metadata information
         ])
         .split(media_inner);
 
-    // Blit raw album art or fallback placeholder
+    app.art_target_w = media_layout[0].width.saturating_sub(2) as u32;
+    app.art_target_h = media_layout[0].height.saturating_sub(2) as u32;
+
+    let art_cols = app.art_target_w as usize;
+    let art_rows = app.art_target_h as usize;
     match &app.album_art_matrix {
         Some(matrix) => {
-            let mut spans_lines = Vec::new();
-            for y in 0..10usize {
-                let mut row_spans = Vec::new();
-                for x in 0..20usize {
-                    if y * 2 < matrix.len() && y * 2 + 1 < matrix.len() && x < matrix[0].len() {
+            let m_cols = matrix.first().map(|r| r.len()).unwrap_or(0);
+            let m_rows = matrix.len() / 2;
+            if m_cols == 0 || m_rows == 0 {
+                let placeholder_row = "▒".repeat(art_cols);
+                let mut art_lines = Vec::new();
+                for _ in 0..art_rows {
+                    art_lines.push(Line::from(vec![Span::styled(&placeholder_row, Style::default().fg(border_color))]));
+                }
+                let art_widget = Paragraph::new(art_lines)
+                    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(border_color)));
+                frame.render_widget(art_widget, media_layout[0]);
+            } else {
+                let x_off = (art_cols.saturating_sub(m_cols)) / 2;
+                let y_off = (art_rows.saturating_sub(m_rows)) / 2;
+                let mut spans_lines: Vec<Line> = Vec::with_capacity(art_rows);
+                for _ in 0..y_off {
+                    spans_lines.push(Line::from(" ".repeat(art_cols)));
+                }
+                for y in 0..m_rows {
+                    let mut row_spans: Vec<Span> = Vec::with_capacity(art_cols);
+                    if x_off > 0 {
+                        row_spans.push(Span::styled(" ".repeat(x_off), Style::default()));
+                    }
+                    for x in 0..m_cols.min(art_cols.saturating_sub(x_off)) {
                         let upper = matrix[y * 2][x];
                         let lower = matrix[y * 2 + 1][x];
                         row_spans.push(Span::styled(
@@ -951,17 +960,26 @@ fn draw_media_view(
                                 .bg(Color::Rgb(lower.0, lower.1, lower.2)),
                         ));
                     }
+                    let remaining = art_cols.saturating_sub(x_off + m_cols);
+                    if remaining > 0 {
+                        row_spans.push(Span::styled(" ".repeat(remaining), Style::default()));
+                    }
+                    spans_lines.push(Line::from(row_spans));
                 }
-                spans_lines.push(Line::from(row_spans));
+                let bottom = art_rows.saturating_sub(y_off + m_rows);
+                for _ in 0..bottom {
+                    spans_lines.push(Line::from(" ".repeat(art_cols)));
+                }
+                let art_widget = Paragraph::new(spans_lines)
+                    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(border_color)));
+                frame.render_widget(art_widget, media_layout[0]);
             }
-            let art_widget = Paragraph::new(spans_lines)
-                .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(border_color)));
-            frame.render_widget(art_widget, media_layout[0]);
         }
         None => {
+            let placeholder_row = "▒".repeat(art_cols);
             let mut art_lines = Vec::new();
-            for _ in 0..10 {
-                art_lines.push(Line::from(vec![Span::styled("▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒", Style::default().fg(border_color))]));
+            for _ in 0..art_rows {
+                art_lines.push(Line::from(vec![Span::styled(&placeholder_row, Style::default().fg(border_color))]));
             }
             let art_placeholder = Paragraph::new(art_lines)
                 .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(border_color)));
@@ -969,7 +987,6 @@ fn draw_media_view(
         }
     }
 
-    // Render song info metadata panel
     let meta_panel = match &app.media_metadata {
         Some(meta) => {
             let status_text = if meta.is_playing { "Playing" } else { "Paused" };
@@ -990,11 +1007,39 @@ fn draw_media_view(
                     Span::styled("Artist: ", Style::default().fg(theme_indigo)),
                     Span::styled(app.marquee_artist.get_visible_slice(text_max.saturating_sub(8)), Style::default().fg(text_neutral))
                 ]),
-                Line::from(vec![Span::styled("Album:  ", Style::default().fg(theme_indigo)), Span::styled(meta.album.clone(), Style::default().fg(text_neutral))]),
+                Line::from(vec![
+                    Span::styled("Album:  ", Style::default().fg(theme_indigo)),
+                    Span::styled(app.marquee_album.get_visible_slice(text_max.saturating_sub(8)), Style::default().fg(text_neutral))
+                ]),
                 Line::from(vec![
                     Span::styled("Year:   ", Style::default().fg(theme_indigo)),
                     Span::styled(year_resolved, Style::default().fg(text_highlight))
                 ]),
+                {
+                    let total = app.media_total_secs;
+                    let extrapolated = app.media_position_secs
+                        + app.media_position_captured_at
+                            .map(|t| t.elapsed().as_secs_f64())
+                            .unwrap_or(0.0);
+                    let pos = extrapolated.min(total).max(0.0);
+                    let bar_len = text_max.saturating_sub(24).max(4);
+                    let filled = if total > 0.0 {
+                        ((pos / total) * bar_len as f64).round() as usize
+                    } else {
+                        0
+                    };
+                    let filled = filled.min(bar_len);
+                    let bar: String = std::iter::repeat('█').take(filled)
+                        .chain(std::iter::repeat('░').take(bar_len - filled))
+                        .collect();
+                    let pos_str = format_duration(pos);
+                    let total_str = format_duration(total);
+                    Line::from(vec![
+                        Span::styled("Progress: ", Style::default().fg(theme_indigo)),
+                        Span::styled(bar, Style::default().fg(theme.highlight)),
+                        Span::styled(format!(" {}/{}", pos_str, total_str), Style::default().fg(text_neutral)),
+                    ])
+                },
                 Line::from(vec![
                     Span::styled("Status: ", Style::default().fg(theme_indigo)), 
                     Span::styled(status_text, status_style)
@@ -1013,17 +1058,14 @@ fn draw_media_view(
     let meta_widget = Paragraph::new(meta_panel).block(Block::default().padding(ratatui::widgets::Padding::new(2, 0, 1, 0)));
     frame.render_widget(meta_widget, media_layout[1]);
 
-    // 2. Real-time Frequency Spectrum Visualizer
     draw_spectrum_visualizer(frame, app, right_chunks[1], theme);
 
-    // 3. Footer spacer block to match left column height
     let spacer = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color));
     frame.render_widget(spacer, right_chunks[2]);
 }
 
-/// Renders the process table in the right column (View B).
 fn draw_process_table(
     frame: &mut ratatui::Frame,
     app: &mut App,
@@ -1102,12 +1144,9 @@ fn draw_process_table(
     frame.render_widget(spacer, chunks[1]);
 }
 
-/// Dynamic grid-layout solver mapping physical CPU logical cores into custom wraps
 fn render_cpu_cores_table(per_core_usage: &[f32], width: u16) -> Table<'_> {
-    // Width allocated to each logical core cell (C01:[▓▓░░]100%)
     let col_width = 16usize;
     
-    // Solve layout column bounds dynamically
     let cols = ((width as usize) / col_width).max(1).min(8);
     
     let mut rows = Vec::new();
@@ -1133,7 +1172,6 @@ fn render_cpu_cores_table(per_core_usage: &[f32], width: u16) -> Table<'_> {
             row_cells.push(Cell::from(cell_text).style(Style::default().fg(color)));
         }
         
-        // Pad the remainder cells if row wraps incomplete
         while row_cells.len() < cols {
             row_cells.push(Cell::from(""));
         }
@@ -1144,7 +1182,6 @@ fn render_cpu_cores_table(per_core_usage: &[f32], width: u16) -> Table<'_> {
     Table::new(rows, constraints)
 }
 
-/// Blits the DSP analysis vector vertically into frames using block markers
 fn draw_spectrum_visualizer(frame: &mut ratatui::Frame, app: &mut App, area: Rect, theme: &ColorTheme) {
     let w = area.width as usize;
     let h = area.height as usize;
@@ -1153,43 +1190,29 @@ fn draw_spectrum_visualizer(frame: &mut ratatui::Frame, app: &mut App, area: Rec
         return;
     }
 
-    // Inner visualizer coordinates accounting for border
     let render_width = w - 2;
     let render_height = h - 2;
 
-    // Dynamic bar count fills available width exactly.
-    // Minimum bar unit = 1 block char + 1 space = 2 chars.
     let max_bars = (render_width / 2).max(1);
     app.max_visualizer_bars = max_bars;
     if app.visualizer_bars.len() < max_bars {
         app.visualizer_bars.resize(max_bars, 0.0);
     }
-    // Compute bar_width so total consumed width == render_width
     let spacing = max_bars.saturating_sub(1);
     let bar_width = render_width.saturating_sub(spacing) / max_bars;
     let bar_width = bar_width.max(1);
 
-    // High density visualizer block scale: 9 entries for sub-pixel height indices 0..=8
-    // Index 0 = empty space, 1 = ▁ (1/8), ..., 8 = █ (full)
     let blocks = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
     let mut lines = Vec::new();
 
-    // Iterate from top row (render_height-1) down to floor row (0).
-    // Row r=render_height-1 is the ceiling; r=0 is the floor.
-    // Pushing in reverse order (high r first) means lines[0] = ceiling row = widget top.
-    // Do NOT reverse after — the earlier lines.reverse() was the source of the upside-down bug.
+    // NOTE: Do NOT reverse. rev() builds top-to-bottom order. An earlier lines.reverse() caused an upside-down bug.
     for r in (0..render_height).rev() {
         let mut row_spans = Vec::new();
         for i in 0..max_bars {
             let val = app.visualizer_bars[i];
-            // Total sub-pixel steps across the full render height
             let total_steps = render_height * 8;
             let steps = (val * total_steps as f32).round() as usize;
 
-            // Determine which sub-pixel block character to draw for this row:
-            // - steps >= (r+1)*8 → bar fully covers this row → full block (index 8)
-            // - steps <= r*8    → bar is entirely below this row → empty (index 0)
-            // - otherwise       → partial fill: how many eighths into this row
             let char_idx = if steps >= (r + 1) * 8 {
                 8
             } else if steps <= r * 8 {
@@ -1201,7 +1224,6 @@ fn draw_spectrum_visualizer(frame: &mut ratatui::Frame, app: &mut App, area: Rec
             let block_char = blocks[char_idx];
             let bar_str = std::iter::repeat(block_char).take(bar_width).collect::<String>();
 
-            // Gradient: highlight (floor) -> accent2 (middle) -> accent1 (ceiling)
             let color = if r < render_height / 3 {
                 theme.highlight
             } else if r < 2 * render_height / 3 {
@@ -1212,13 +1234,11 @@ fn draw_spectrum_visualizer(frame: &mut ratatui::Frame, app: &mut App, area: Rec
 
             row_spans.push(Span::styled(bar_str, Style::default().fg(color)));
             if i < max_bars - 1 {
-                row_spans.push(Span::styled(" ", Style::default())); // inter-bar spacing
+                row_spans.push(Span::styled(" ", Style::default()));
             }
         }
         lines.push(Line::from(row_spans));
     }
-    // NOTE: Do NOT call lines.reverse() here. The rev() in the loop above already
-    // builds lines in top-to-bottom order (ceiling first, floor last).
 
     let visualizer_widget = Paragraph::new(lines)
         .block(Block::default()
@@ -1230,7 +1250,6 @@ fn draw_spectrum_visualizer(frame: &mut ratatui::Frame, app: &mut App, area: Rec
     frame.render_widget(visualizer_widget, area);
 }
 
-/// Helper function to format uptime into a zero-emoji string
 fn format_uptime(secs: u64) -> String {
     let days = secs / 86400;
     let hours = (secs % 86400) / 3600;
@@ -1245,7 +1264,18 @@ fn format_uptime(secs: u64) -> String {
     }
 }
 
-/// Dynamic byte formatting utility
+fn format_duration(total_secs: f64) -> String {
+    let total = total_secs as u64;
+    let hours = total / 3600;
+    let minutes = (total % 3600) / 60;
+    let seconds = total % 60;
+    if hours > 0 {
+        format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+    } else {
+        format!("{:02}:{:02}", minutes, seconds)
+    }
+}
+
 fn format_bytes(bytes: u64) -> String {
     if bytes == 0 {
         return "0 B".to_string();
@@ -1261,7 +1291,6 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-/// Network speed formatting utility
 fn format_speed(bytes_per_sec: u64) -> String {
     format!("{}/s", format_bytes(bytes_per_sec))
 }
@@ -1278,8 +1307,6 @@ fn draw_metric_gauge(
     title_color: Color,
 ) {
     if area.width < 30 {
-        // Drop title/borders, render a highly packed metric indicator:
-        // [▓▓░░] 45%
         let pct = (ratio * 100.0).round() as usize;
         let total_chars = (area.width as usize).saturating_sub(8).max(4);
         let filled = (ratio * total_chars as f64).round() as usize;

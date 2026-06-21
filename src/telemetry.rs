@@ -21,8 +21,8 @@ pub struct ProcessInfo {
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct SystemSnapshot {
-    // OS / System metadata
     pub os_name: String,
     pub os_version: String,
     pub kernel_version: String,
@@ -30,41 +30,31 @@ pub struct SystemSnapshot {
     pub host_name: String,
     pub uptime: u64,
 
-    // CPU usage
     pub cpu_count: usize,
     pub global_cpu_usage: f32,
     pub per_core_cpu_usage: Vec<f32>,
 
-    // Memory usage
     pub total_memory: u64,
     pub used_memory: u64,
     pub total_swap: u64,
     pub used_swap: u64,
 
-    // Disks
     pub disks: Vec<DiskInfo>,
 
-    // Network throughput
     pub net_rx_bytes_sec: u64,
     pub net_tx_bytes_sec: u64,
     pub net_total_rx: u64,
     pub net_total_tx: u64,
 
-    // Processes
     pub processes: Vec<ProcessInfo>,
-
 }
 
-/// Spawns a background thread to gather Windows metrics using the `sysinfo` crate.
-/// Snapshots are passed cleanly through the crossbeam channel `tx`.
 pub fn spawn_telemetry_thread(tx: Sender<Box<SystemSnapshot>>, poll_interval: Duration) -> thread::JoinHandle<()> {
     thread::spawn(move || {
-        // Initialize sysinfo structs
         let mut sys = System::new_all();
         let mut disks = Disks::new_with_refreshed_list();
         let mut networks = Networks::new_with_refreshed_list();
 
-        // Perform initial refresh for CPU metrics delta calculations
         sys.refresh_all();
         thread::sleep(Duration::from_millis(200));
         sys.refresh_all();
@@ -72,24 +62,16 @@ pub fn spawn_telemetry_thread(tx: Sender<Box<SystemSnapshot>>, poll_interval: Du
         let mut last_refresh = Instant::now();
 
         loop {
-            // Keep thread alive at specified polling interval
-            thread::sleep(poll_interval);
+        thread::sleep(poll_interval);
 
-            // Record precise elapsed time to compute throughput accurately
-            let elapsed = last_refresh.elapsed();
+        let elapsed = last_refresh.elapsed();
             last_refresh = Instant::now();
-            let elapsed_secs = elapsed.as_secs_f64().max(0.001); // avoid division by zero
+            let elapsed_secs = elapsed.as_secs_f64().max(0.001);
 
-            // Refresh system data
             sys.refresh_all();
-
-            // Refresh disks. In sysinfo 0.30, refresh_list updates disk info.
             disks.refresh_list();
-
-            // Refresh network interfaces data
             networks.refresh();
 
-            // 1. Gather System Metadata (retaining standard default if unavailable)
             let os_name = System::name().unwrap_or_else(|| "Windows 11".to_string());
             let os_version = System::os_version().unwrap_or_else(|| "Unknown".to_string());
             let kernel_version = System::kernel_version().unwrap_or_else(|| "Unknown".to_string());
@@ -97,18 +79,15 @@ pub fn spawn_telemetry_thread(tx: Sender<Box<SystemSnapshot>>, poll_interval: Du
             let host_name = System::host_name().unwrap_or_else(|| "localhost".to_string());
             let uptime = System::uptime();
 
-            // 2. CPU Metrics
             let cpu_count = sys.cpus().len();
             let global_cpu_usage = sys.global_cpu_info().cpu_usage();
             let per_core_cpu_usage: Vec<f32> = sys.cpus().iter().map(|cpu| cpu.cpu_usage()).collect();
 
-            // 3. Memory metrics (bytes)
             let total_memory = sys.total_memory();
             let used_memory = sys.used_memory();
             let total_swap = sys.total_swap();
             let used_swap = sys.used_swap();
 
-            // 4. Disks Metrics
             let disks_data: Vec<DiskInfo> = disks
                 .iter()
                 .map(|disk| DiskInfo {
@@ -120,7 +99,6 @@ pub fn spawn_telemetry_thread(tx: Sender<Box<SystemSnapshot>>, poll_interval: Du
                 })
                 .collect();
 
-            // 5. Network Metrics
             let mut rx_delta = 0;
             let mut tx_delta = 0;
             let mut net_total_rx = 0;
@@ -136,8 +114,6 @@ pub fn spawn_telemetry_thread(tx: Sender<Box<SystemSnapshot>>, poll_interval: Du
             let net_rx_bytes_sec = (rx_delta as f64 / elapsed_secs) as u64;
             let net_tx_bytes_sec = (tx_delta as f64 / elapsed_secs) as u64;
 
-            // 6. Processes Metrics
-            // Retrieve all processes. In sysinfo 0.30, processes() returns HashMap<Pid, Process>
             let processes: Vec<ProcessInfo> = sys
                 .processes()
                 .iter()
@@ -171,9 +147,7 @@ pub fn spawn_telemetry_thread(tx: Sender<Box<SystemSnapshot>>, poll_interval: Du
                 processes,
             };
 
-            // Send system state snapshot to UI thread
             if tx.send(Box::new(snapshot)).is_err() {
-                // Main UI thread disconnected, exit background thread cleanly
                 break;
             }
         }
