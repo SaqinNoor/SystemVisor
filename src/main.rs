@@ -57,6 +57,26 @@ impl SortColumn {
     }
 }
 
+/// A named color palette for the TUI.
+struct ColorTheme {
+    name: &'static str,
+    border: Color,
+    highlight: Color,
+    neutral: Color,
+    accent1: Color,
+    accent2: Color,
+}
+
+const THEMES: &[ColorTheme] = &[
+    ColorTheme { name: "Default",       border: Color::Rgb( 71,  85, 105), highlight: Color::Rgb( 34, 211, 238), neutral: Color::Rgb(226, 232, 240), accent1: Color::Rgb(167, 139, 250), accent2: Color::Rgb(129, 140, 248) },
+    ColorTheme { name: "Nord",          border: Color::Rgb( 76,  86, 106), highlight: Color::Rgb(136, 192, 208), neutral: Color::Rgb(216, 222, 233), accent1: Color::Rgb(129, 161, 193), accent2: Color::Rgb( 94, 129, 172) },
+    ColorTheme { name: "Gruvbox Dark",  border: Color::Rgb( 80,  73,  69), highlight: Color::Rgb(184, 147,  85), neutral: Color::Rgb(235, 219, 178), accent1: Color::Rgb(204,  56,  42), accent2: Color::Rgb(152, 151,  26) },
+    ColorTheme { name: "Catppuccin",    border: Color::Rgb( 91,  96, 120), highlight: Color::Rgb(138, 173, 244), neutral: Color::Rgb(202, 211, 245), accent1: Color::Rgb(245, 194, 231), accent2: Color::Rgb(180, 190, 254) },
+    ColorTheme { name: "Dracula",       border: Color::Rgb( 98, 114, 164), highlight: Color::Rgb( 80, 250, 123), neutral: Color::Rgb(248, 248, 242), accent1: Color::Rgb(255, 121, 198), accent2: Color::Rgb(189, 147, 249) },
+    ColorTheme { name: "Tokyo Night",   border: Color::Rgb( 86,  95, 137), highlight: Color::Rgb(122, 162, 247), neutral: Color::Rgb(169, 177, 214), accent1: Color::Rgb(187, 154, 247), accent2: Color::Rgb(247, 163, 163) },
+    ColorTheme { name: "Monochrome",    border: Color::Rgb(100, 100, 100), highlight: Color::Rgb(255, 255, 255), neutral: Color::Rgb(200, 200, 200), accent1: Color::Rgb(150, 150, 150), accent2: Color::Rgb(128, 128, 128) },
+];
+
 /// View state for the right column.
 enum RightView {
     Media,
@@ -85,6 +105,9 @@ struct App {
 
     // Viewport toggle
     right_view: RightView,
+
+    // Theme
+    theme_index: usize,
 }
 
 impl App {
@@ -104,6 +127,7 @@ impl App {
             album_art_matrix: None,
             gpu_data: None,
             right_view: RightView::Media,
+            theme_index: 0,
         }
     }
 
@@ -360,6 +384,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     RightView::Processes => RightView::Media,
                                 };
                             }
+                            KeyCode::Char('t') => {
+                                app.theme_index = (app.theme_index + 1) % THEMES.len();
+                            }
                             _ => {}
                         }
                     }
@@ -462,12 +489,13 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
         ])
         .split(main_chunks[0]);
 
-    // Slate Indigo palette color tokens
-    let border_color = Color::Rgb(71, 85, 105);
-    let text_highlight = Color::Rgb(34, 211, 238);
-    let text_neutral = Color::Rgb(226, 232, 240);
-    let theme_violet = Color::Rgb(167, 139, 250);
-    let theme_indigo = Color::Rgb(129, 140, 248);
+    // Resolve active theme
+    let theme = &THEMES[app.theme_index];
+    let border_color = theme.border;
+    let text_highlight = theme.highlight;
+    let text_neutral = theme.neutral;
+    let theme_violet = theme.accent1;
+    let theme_indigo = theme.accent2;
 
     // Retrieve snap reference
     let snapshot_ref = match &app.snapshot {
@@ -684,9 +712,11 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
         RightView::Media => "Media",
         RightView::Processes => "Process",
     };
+    let theme_name = THEMES[app.theme_index].name;
     let footer_text = format!(
-        " [q] Quit | [v] View({}) | [Tab/s] Cycle Sort | [r] Reverse | [1-4] Sort Col | [j/k] Scroll (Sort: {} {})",
+        " [q] Quit | [v] View({}) | [t] {} | [Tab/s] Cycle Sort | [r] Reverse | [1-4] Sort Col | [j/k] Scroll (Sort: {} {})",
         view_label,
+        theme_name,
         sort_col_name,
         if app.sort_ascending { "Asc" } else { "Desc" }
     );
@@ -698,10 +728,10 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
 
     match app.right_view {
         RightView::Media => {
-            draw_media_view(frame, app, main_chunks[1], border_color, text_highlight, text_neutral, theme_violet, theme_indigo);
+            draw_media_view(frame, app, main_chunks[1], theme);
         }
         RightView::Processes => {
-            draw_process_table(frame, app, main_chunks[1], border_color, text_highlight, text_neutral, theme_indigo);
+            draw_process_table(frame, app, main_chunks[1], theme);
         }
     }
 }
@@ -711,12 +741,14 @@ fn draw_media_view(
     frame: &mut ratatui::Frame,
     app: &mut App,
     area: Rect,
-    border_color: Color,
-    text_highlight: Color,
-    text_neutral: Color,
-    theme_violet: Color,
-    theme_indigo: Color,
+    theme: &ColorTheme,
 ) {
+    let border_color = theme.border;
+    let text_highlight = theme.highlight;
+    let text_neutral = theme.neutral;
+    let theme_violet = theme.accent1;
+    let theme_indigo = theme.accent2;
+
     let right_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -746,11 +778,9 @@ fn draw_media_view(
     match &app.album_art_matrix {
         Some(matrix) => {
             let mut spans_lines = Vec::new();
-            // Blit using vertical half-block coordinate system (2 vertical pixels mapped per terminal cell)
             for y in 0..10usize {
                 let mut row_spans = Vec::new();
                 for x in 0..20usize {
-                    // Safety check array indices
                     if y * 2 < matrix.len() && y * 2 + 1 < matrix.len() && x < matrix[0].len() {
                         let upper = matrix[y * 2][x];
                         let lower = matrix[y * 2 + 1][x];
@@ -769,7 +799,6 @@ fn draw_media_view(
             frame.render_widget(art_widget, media_layout[0]);
         }
         None => {
-            // Render beautiful geometric geometric placeholder if no media is running
             let mut art_lines = Vec::new();
             for _ in 0..10 {
                 art_lines.push(Line::from(vec![Span::styled("▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒", Style::default().fg(border_color))]));
@@ -780,7 +809,7 @@ fn draw_media_view(
         }
     }
 
-    // Render song info metadata panel (Zero-Emoji)
+    // Render song info metadata panel
     let meta_panel = match &app.media_metadata {
         Some(meta) => {
             let status_text = if meta.is_playing { "Playing" } else { "Paused" };
@@ -816,8 +845,8 @@ fn draw_media_view(
     let meta_widget = Paragraph::new(meta_panel).block(Block::default().padding(ratatui::widgets::Padding::new(2, 0, 1, 0)));
     frame.render_widget(meta_widget, media_layout[1]);
 
-    // 2. Real-time Frequency Spectrum Visualizer (High-Fidelity Block drawing)
-    draw_spectrum_visualizer(frame, app, right_chunks[1]);
+    // 2. Real-time Frequency Spectrum Visualizer
+    draw_spectrum_visualizer(frame, app, right_chunks[1], theme);
 }
 
 /// Renders the process table in the right column (View B).
@@ -825,11 +854,12 @@ fn draw_process_table(
     frame: &mut ratatui::Frame,
     app: &mut App,
     area: Rect,
-    border_color: Color,
-    text_highlight: Color,
-    text_neutral: Color,
-    theme_indigo: Color,
+    theme: &ColorTheme,
 ) {
+    let border_color = theme.border;
+    let text_highlight = theme.highlight;
+    let text_neutral = theme.neutral;
+    let theme_indigo = theme.accent2;
     let sort_indicator = |col: SortColumn| -> &'static str {
         if app.sort_column != col {
             return " ";
@@ -927,7 +957,7 @@ fn render_cpu_cores_table(per_core_usage: &[f32], width: u16) -> Table<'_> {
 }
 
 /// Blits the DSP analysis vector vertically into frames using block markers
-fn draw_spectrum_visualizer(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
+fn draw_spectrum_visualizer(frame: &mut ratatui::Frame, app: &mut App, area: Rect, theme: &ColorTheme) {
     let w = area.width as usize;
     let h = area.height as usize;
     
@@ -983,13 +1013,13 @@ fn draw_spectrum_visualizer(frame: &mut ratatui::Frame, app: &mut App, area: Rec
             let block_char = blocks[char_idx];
             let bar_str = std::iter::repeat(block_char).take(bar_width).collect::<String>();
 
-            // Gradient: Cyan (floor/bottom) -> Indigo (middle) -> Violet (ceiling/top)
+            // Gradient: highlight (floor) -> accent2 (middle) -> accent1 (ceiling)
             let color = if r < render_height / 3 {
-                Color::Rgb(34, 211, 238)   // Cyan 400 — bass frequencies at bottom
+                theme.highlight
             } else if r < 2 * render_height / 3 {
-                Color::Rgb(129, 140, 248)  // Indigo 400 — mids
+                theme.accent2
             } else {
-                Color::Rgb(167, 139, 250)  // Violet 400 — highs at top
+                theme.accent1
             };
 
             row_spans.push(Span::styled(bar_str, Style::default().fg(color)));
@@ -1005,9 +1035,9 @@ fn draw_spectrum_visualizer(frame: &mut ratatui::Frame, app: &mut App, area: Rec
     let visualizer_widget = Paragraph::new(lines)
         .block(Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Rgb(71, 85, 105)))
+            .border_style(Style::default().fg(theme.border))
             .title(" REAL-TIME FREQUENCY SPECTRUM ")
-            .title_style(Style::default().fg(Color::Rgb(129, 140, 248))));
+            .title_style(Style::default().fg(theme.accent2)));
             
     frame.render_widget(visualizer_widget, area);
 }
