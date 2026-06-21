@@ -2,6 +2,7 @@ mod telemetry;
 mod audio_visualizer;
 mod media_controls;
 mod art_processor;
+mod gpu_telemetry;
 
 use std::io::stdout;
 use std::time::Duration;
@@ -67,10 +68,14 @@ struct App {
     
     // Audio Visualizer states
     visualizer_bars: Vec<f32>,
+    max_visualizer_bars: usize,
 
     // Media states
     media_metadata: Option<MediaMetadata>,
     album_art_matrix: Option<Vec<Vec<(u8, u8, u8)>>>,
+
+    // GPU telemetry
+    gpu_data: Option<gpu_telemetry::GpuSnapshot>,
 }
 
 impl App {
@@ -85,8 +90,10 @@ impl App {
             process_table_state: table_state,
             sorted_processes: Vec::new(),
             visualizer_bars: vec![0.0f32; 16],
+            max_visualizer_bars: 16,
             media_metadata: None,
             album_art_matrix: None,
+            gpu_data: None,
         }
     }
 
@@ -219,6 +226,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (audio_tx, audio_rx) = crossbeam_channel::unbounded();
     let (media_tx, media_rx) = crossbeam_channel::unbounded();
     let (art_tx, art_rx) = crossbeam_channel::unbounded();
+    let (gpu_tx, gpu_rx) = crossbeam_channel::unbounded();
 
     // Input polling thread
     std::thread::spawn(move || {
@@ -251,6 +259,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Media tracking and online metadata year resolver thread
     media_controls::spawn_media_controls_thread(media_tx);
+
+    // GPU telemetry polling thread (single long-lived PowerShell process)
+    gpu_telemetry::spawn_gpu_telemetry_thread(gpu_tx);
 
     // 3. Initialize terminal and application state
     let backend = CrosstermBackend::new(stdout_stream);
@@ -343,9 +354,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             recv(audio_rx) -> audio_res => {
                 match audio_res {
                     Ok(spectrum) => {
-                        // Apply exponential decay filter (~0.85) to smooth out visualizer drop
-                        for i in 0..16 {
-                            app.visualizer_bars[i] = f32::max(spectrum[i], app.visualizer_bars[i] * 0.92);
+                        let target = app.max_visualizer_bars;
+                        if app.visualizer_bars.len() != target {
+                            app.visualizer_bars.resize(target, 0.0);
+                        }
+                        // Linear interpolation to map 16 FFT bands to target bar count
+                        let band_count = spectrum.len();
+                        for j in 0..target {
+                            let pos = j as f32 * (band_count - 1) as f32 / target as f32;
+                            let lo = pos.floor() as usize;
+                            let hi = (lo + 1).min(band_count - 1);
+                            let frac = pos - lo as f32;
+                            let interpolated =
+                                spectrum[lo] * (1.0 - frac) + spectrum[hi] * frac;
+                            app.visualizer_bars[j] =
+                                f32::max(interpolated, app.visualizer_bars[j] * 0.92);
                         }
                     }
                     Err(_) => {}
@@ -377,6 +400,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match art_res {
                     Ok(matrix) => {
                         app.album_art_matrix = Some(matrix);
+                    }
+                    Err(_) => {}
+                }
+            }
+            recv(gpu_rx) -> gpu_res => {
+                match gpu_res {
+                    Ok(snap) => {
+                        app.gpu_data = Some(*snap);
                     }
                     Err(_) => {}
                 }
@@ -536,9 +567,10 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut App) {
     );
 
     // GPU
-    let gpu_used = snapshot_ref.gpu_vram_used;
-    let gpu_total = snapshot_ref.gpu_vram_total;
-    let gpu_pct = snapshot_ref.gpu_usage;
+    let (gpu_pct, gpu_used, gpu_total) = match &app.gpu_data {
+        Some(g) => (g.utilization, g.vram_used, g.vram_total),
+        None => (0.0, 0, 0),
+    };
     let gpu_color = if gpu_pct < 60.0 { Color::Rgb(52, 211, 153) } else if gpu_pct < 85.0 { Color::Rgb(251, 191, 36) } else { Color::Rgb(251, 113, 133) };
     let gpu_label = format!("{:.1}% ({}/{})", gpu_pct, format_bytes(gpu_used), format_bytes(gpu_total));
 
@@ -789,7 +821,7 @@ fn render_cpu_cores_table(per_core_usage: &[f32], width: u16) -> Table<'_> {
 }
 
 /// Blits the DSP analysis vector vertically into frames using block markers
-fn draw_spectrum_visualizer(frame: &mut ratatui::Frame, app: &App, area: Rect) {
+fn draw_spectrum_visualizer(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
     let w = area.width as usize;
     let h = area.height as usize;
     
@@ -800,9 +832,18 @@ fn draw_spectrum_visualizer(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     // Inner visualizer coordinates accounting for border
     let render_width = w - 2;
     let render_height = h - 2;
-    
-    const BARS: usize = 16;
-    let bar_width = (render_width / BARS).max(1);
+
+    // Dynamic bar count fills available width exactly.
+    // Minimum bar unit = 1 block char + 1 space = 2 chars.
+    let max_bars = (render_width / 2).max(1);
+    app.max_visualizer_bars = max_bars;
+    if app.visualizer_bars.len() < max_bars {
+        app.visualizer_bars.resize(max_bars, 0.0);
+    }
+    // Compute bar_width so total consumed width == render_width
+    let spacing = max_bars.saturating_sub(1);
+    let bar_width = render_width.saturating_sub(spacing) / max_bars;
+    let bar_width = bar_width.max(1);
 
     // High density visualizer block scale: 9 entries for sub-pixel height indices 0..=8
     // Index 0 = empty space, 1 = ▁ (1/8), ..., 8 = █ (full)
@@ -815,7 +856,7 @@ fn draw_spectrum_visualizer(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     // Do NOT reverse after — the earlier lines.reverse() was the source of the upside-down bug.
     for r in (0..render_height).rev() {
         let mut row_spans = Vec::new();
-        for i in 0..BARS {
+        for i in 0..max_bars {
             let val = app.visualizer_bars[i];
             // Total sub-pixel steps across the full render height
             let total_steps = render_height * 8;
@@ -846,7 +887,9 @@ fn draw_spectrum_visualizer(frame: &mut ratatui::Frame, app: &App, area: Rect) {
             };
 
             row_spans.push(Span::styled(bar_str, Style::default().fg(color)));
-            row_spans.push(Span::styled(" ", Style::default())); // inter-bar spacing
+            if i < max_bars - 1 {
+                row_spans.push(Span::styled(" ", Style::default())); // inter-bar spacing
+            }
         }
         lines.push(Line::from(row_spans));
     }
